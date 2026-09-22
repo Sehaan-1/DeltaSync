@@ -10,7 +10,9 @@ public static class ConflictedPathHelper
 {
     public const int MaxCollisionAttempts = 100;
 
-    private static readonly HashSet<char> InvalidChars = Path.GetInvalidFileNameChars().ToHashSet();
+    // Use the Windows-invalid filename characters consistently on all platforms.
+    private static readonly HashSet<char> InvalidCharacters = new(
+        new[] { '<', '>', ':', '"', '/', '\\', '|', '?', '*' });
 
     /// <summary>
     /// Generates a conflict sibling path for the given file path and peer identifier.
@@ -37,7 +39,7 @@ public static class ConflictedPathHelper
             throw new ArgumentException("Peer ID cannot be null, empty, or whitespace.", nameof(peerId));
         }
 
-        string sanitizedPeer = SanitizePeerId(peerId.Trim());
+        string sanitizedPeerId = SanitizePeerId(peerId.Trim());
         string normalizedPath = relativePath.Replace('\\', '/');
 
         string directory = Path.GetDirectoryName(normalizedPath)?.Replace('\\', '/') ?? string.Empty;
@@ -61,8 +63,8 @@ public static class ConflictedPathHelper
         for (int attempt = 1; attempt <= MaxCollisionAttempts; attempt++)
         {
             string suffix = attempt == 1
-                ? $" ({sanitizedPeer} conflicted)"
-                : $" ({sanitizedPeer} conflicted {attempt})";
+                ? $" ({sanitizedPeerId} conflicted)"
+                : $" ({sanitizedPeerId} conflicted {attempt})";
 
             string candidateFileName = $"{baseName}{suffix}{extension}";
             string candidatePath = string.IsNullOrEmpty(directory)
@@ -85,15 +87,13 @@ public static class ConflictedPathHelper
     /// </summary>
     public static string SanitizePeerId(string peerId)
     {
-        char[] chars = peerId.ToCharArray();
-        for (int i = 0; i < chars.Length; i++)
-        {
-            if (InvalidChars.Contains(chars[i]))
-            {
-                chars[i] = '_';
-            }
-        }
+        ArgumentException.ThrowIfNullOrWhiteSpace(peerId);
 
-        return new string(chars);
+        // Use the Windows-invalid filename characters consistently on all platforms.
+        var invalidCharacters = InvalidCharacters;
+
+        return string.Concat(
+            peerId.Select(character =>
+                invalidCharacters.Contains(character) ? '_' : character));
     }
 }
