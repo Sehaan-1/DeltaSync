@@ -198,4 +198,39 @@ public class BeaconSerializationTests
 
         _output.WriteLine($"[Spec §6 Passed] Known-answer vector verified with SHA-256={frame.PeerIdHashHex[..8]}...");
     }
+
+    [Fact]
+    public void SpecSection3Step2_FloydJacobson_JitterDistribution_RespectsBounds()
+    {
+        // Base interval = 3.0s, Jitter = +/- 20% (Floyd & Jacobson 1993)
+        // Interval distribution: U(2.4s, 3.6s)
+        var baseInterval = TimeSpan.FromSeconds(3.0);
+        double jitterRatio = 0.20;
+        int iterations = 10_000;
+
+        double sumMilliseconds = 0;
+        double minMilliseconds = double.MaxValue;
+        double maxMilliseconds = double.MinValue;
+
+        for (int i = 0; i < iterations; i++)
+        {
+            var interval = UdpBeaconAnnouncer.ComputeJitteredInterval(baseInterval, jitterRatio);
+            double ms = interval.TotalMilliseconds;
+
+            ms.Should().BeInRange(2400.0, 3600.0, "Jittered delay must stay strictly within [2.4s, 3.6s]");
+
+            sumMilliseconds += ms;
+            if (ms < minMilliseconds) minMilliseconds = ms;
+            if (ms > maxMilliseconds) maxMilliseconds = ms;
+        }
+
+        double meanMilliseconds = sumMilliseconds / iterations;
+
+        _output.WriteLine($"[Floyd-Jacobson Jitter] Min: {minMilliseconds:F1}ms, Max: {maxMilliseconds:F1}ms, Mean: {meanMilliseconds:F1}ms");
+
+        // Assert uniform distribution properties
+        meanMilliseconds.Should().BeInRange(2950.0, 3050.0, "Mean should converge to base interval 3000ms (+/- 50ms)");
+        minMilliseconds.Should().BeLessThan(2450.0, "Distribution should cover lower boundary [2400ms, 2450ms]");
+        maxMilliseconds.Should().BeGreaterThan(3550.0, "Distribution should cover upper boundary [3550ms, 3600ms]");
+    }
 }
