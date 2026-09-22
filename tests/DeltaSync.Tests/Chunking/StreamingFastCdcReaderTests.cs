@@ -151,4 +151,55 @@ public class StreamingFastCdcReaderTests
         Assert.Equal(expectedManifest.RootHash, manifest.RootHash);
         Assert.Equal(expectedManifest.Chunks.Count, manifest.Chunks.Count);
     }
+
+    [Fact]
+    public void MemoryBoundedStreamReader_CanProcessMultiMegabyteStreamWithoutLoadingIntoMemory()
+    {
+        // Custom non-seekable repeating stream that simulates a 20MB file
+        using var repeatingStream = new RepeatingPatternStream(length: 20 * 1024 * 1024);
+
+        long memBefore = GC.GetAllocatedBytesForCurrentThread();
+        var manifest = StreamingFastCdcReader.ReadManifest("large.bin", repeatingStream);
+        long memAfter = GC.GetAllocatedBytesForCurrentThread();
+
+        Assert.Equal(20 * 1024 * 1024, manifest.FileSize);
+        Assert.True(manifest.Chunks.Count > 0);
+
+        // Memory allocated during ReadManifest for a 20MB stream should be strictly bounded to < 2 MB
+        long allocatedBytes = memAfter - memBefore;
+        Assert.True(allocatedBytes < 2 * 1024 * 1024,
+            $"Expected < 2MB allocated during ReadManifest, but measured {allocatedBytes / 1024.0:F1} KB.");
+    }
+
+    private sealed class RepeatingPatternStream : Stream
+    {
+        private readonly long _totalLength;
+        private long _position;
+        private static readonly byte[] Pattern = Encoding.ASCII.GetBytes("DeltaSync-FastCDC-Streaming-Bounded-Memory-Check-0123456789\n");
+
+        public RepeatingPatternStream(long length) => _totalLength = length;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _totalLength;
+        public override long Position { get => _position; set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_position >= _totalLength) return 0;
+            int toRead = (int)Math.Min(count, _totalLength - _position);
+            for (int i = 0; i < toRead; i++)
+            {
+                buffer[offset + i] = Pattern[(_position + i) % Pattern.Length];
+            }
+            _position += toRead;
+            return toRead;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
 }
