@@ -1,5 +1,6 @@
 namespace DeltaSync.Network;
 
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 
 /// <summary>
@@ -201,7 +202,7 @@ public sealed class PeerRegistry
         return false;
     }
 
-    public bool TryGetPeer(string peerId, out PeerRecord? peer)
+    public bool TryGetPeer(string peerId, [NotNullWhen(true)] out PeerRecord? peer)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(peerId);
 
@@ -218,7 +219,7 @@ public sealed class PeerRegistry
         return false;
     }
 
-    public bool TryGetPeerByHash(ReadOnlySpan<byte> peerIdHash, out PeerRecord? peer)
+    public bool TryGetPeerByHash(ReadOnlySpan<byte> peerIdHash, [NotNullWhen(true)] out PeerRecord? peer)
     {
         string hashHex = Convert.ToHexString(peerIdHash);
 
@@ -235,7 +236,7 @@ public sealed class PeerRegistry
         return false;
     }
 
-    public bool TryGetPeerByEndpoint(IPEndPoint endpoint, out PeerRecord? peer)
+    public bool TryGetPeerByEndpoint(IPEndPoint endpoint, [NotNullWhen(true)] out PeerRecord? peer)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
@@ -255,7 +256,7 @@ public sealed class PeerRegistry
     /// <summary>
     /// Transitions a peer to Connected state, resetting failed attempts and updating LastConnected timestamp.
     /// </summary>
-    public bool MarkConnected(string peerId, out PeerRecord? peer)
+    public bool MarkConnected(string peerId, [NotNullWhen(true)] out PeerRecord? peer)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(peerId);
 
@@ -286,7 +287,7 @@ public sealed class PeerRegistry
     /// <summary>
     /// Transitions a peer to Stale state (missed beacons for > 6.0s).
     /// </summary>
-    public bool MarkStale(string peerId, out PeerRecord? peer)
+    public bool MarkStale(string peerId, [NotNullWhen(true)] out PeerRecord? peer)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(peerId);
 
@@ -314,7 +315,7 @@ public sealed class PeerRegistry
     /// Transitions a peer to Dead state (missed beacons for > 9.0s), optionally evicting from active tracking.
     /// Emits PeerLost event.
     /// </summary>
-    public bool MarkDead(string peerId, bool evict, out PeerRecord? peer)
+    public bool MarkDead(string peerId, bool evict, [NotNullWhen(true)] out PeerRecord? peer)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(peerId);
 
