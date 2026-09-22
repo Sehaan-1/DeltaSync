@@ -1,6 +1,7 @@
 # Check Verification: Ticket #18 (Atomic File Metadata Upsert, Chunk Inverted Indexing, and Ref-Count Maintenance)
 
 - **Ticket:** [#18 Implement atomic file metadata upsert, chunk inverted indexing, and ref-count maintenance](https://github.com/Sehaan-1/DeltaSync/issues/18)
+- **Commit SHA:** `d1e7bec`
 - **Branch:** `feature/ticket-18-state-store`
 - **Execution Date:** 2026-09-23T03:10:00+05:30
 - **Runner Environment:** Windows 11 x64, .NET SDK 8.0.425, Release Configuration
