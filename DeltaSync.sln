@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{3D3C7EEC-F846-4E47-903F-258EA83C5F8E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeltaSync.Core", "src\DeltaSync.Core\DeltaSync.Core.csproj", "{AB93BFAF-5652-4014-8477-8B4A6D53D3CA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeltaSync.Network", "src\DeltaSync.Network\DeltaSync.Network.csproj", "{CC6A378F-40EF-40D1-B908-370E596C53D0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeltaSync.Cli", "src\DeltaSync.Cli\DeltaSync.Cli.csproj", "{1763B680-F677-4295-838D-98FDE5F9B8C9}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{78C86447-8C17-4F3B-8963-47CBC05C1495}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeltaSync.Tests", "tests\DeltaSync.Tests\DeltaSync.Tests.csproj", "{E2CEA3E9-C824-4982-8A9B-FAFAE5A334EF}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AB93BFAF-5652-4014-8477-8B4A6D53D3CA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AB93BFAF-5652-4014-8477-8B4A6D53D3CA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AB93BFAF-5652-4014-8477-8B4A6D53D3CA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AB93BFAF-5652-4014-8477-8B4A6D53D3CA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CC6A378F-40EF-40D1-B908-370E596C53D0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CC6A378F-40EF-40D1-B908-370E596C53D0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CC6A378F-40EF-40D1-B908-370E596C53D0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CC6A378F-40EF-40D1-B908-370E596C53D0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1763B680-F677-4295-838D-98FDE5F9B8C9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1763B680-F677-4295-838D-98FDE5F9B8C9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1763B680-F677-4295-838D-98FDE5F9B8C9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1763B680-F677-4295-838D-98FDE5F9B8C9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E2CEA3E9-C824-4982-8A9B-FAFAE5A334EF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E2CEA3E9-C824-4982-8A9B-FAFAE5A334EF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E2CEA3E9-C824-4982-8A9B-FAFAE5A334EF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E2CEA3E9-C824-4982-8A9B-FAFAE5A334EF}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{AB93BFAF-5652-4014-8477-8B4A6D53D3CA} = {3D3C7EEC-F846-4E47-903F-258EA83C5F8E}
+		{CC6A378F-40EF-40D1-B908-370E596C53D0} = {3D3C7EEC-F846-4E47-903F-258EA83C5F8E}
+		{1763B680-F677-4295-838D-98FDE5F9B8C9} = {3D3C7EEC-F846-4E47-903F-258EA83C5F8E}
+		{E2CEA3E9-C824-4982-8A9B-FAFAE5A334EF} = {78C86447-8C17-4F3B-8963-47CBC05C1495}
+	EndGlobalSection
+EndGlobal

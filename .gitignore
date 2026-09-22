@@ -1,0 +1,29 @@
+## Visual Studio / .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+.idea/
+.vscode/
+
+## Test Results
+TestResults/
+*.trx
+*.coverage
+
+## DeltaSync local data
+.deltasync/
+sync-folder-a/
+sync-folder-b/
+*.db
+*.db-shm
+*.db-wal
+
+## OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
