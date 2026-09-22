@@ -44,4 +44,17 @@ public interface ISqliteStateStore : IAsyncDisposable, IDisposable
     /// Resolves the physical file byte range location for a given chunk hash from active files.
     /// </summary>
     Task<ChunkLocation?> GetChunkLocationAsync(string chunkHash, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves the Merkle node digest and child count for a given directory prefix.
+    /// Root directory is represented as an empty string ("").
+    /// </summary>
+    Task<MerkleNode?> GetMerkleNodeAsync(string prefix, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Compares the local Merkle prefix state with a remote peer's node hash, returning the direct child files
+    /// and immediate subdirectory nodes if divergent, or indicating identical state.
+    /// </summary>
+    Task<DirectoryDifference> GetDirectoryDifferenceAsync(string prefix, string remoteNodeHash, CancellationToken cancellationToken = default);
 }
+

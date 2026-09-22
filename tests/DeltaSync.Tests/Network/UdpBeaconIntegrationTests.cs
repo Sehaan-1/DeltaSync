@@ -1,5 +1,6 @@
 namespace DeltaSync.Tests.Network;
 
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using DeltaSync.Network;
@@ -169,7 +170,11 @@ public class UdpBeaconIntegrationTests
         await using var announcer = new UdpBeaconAnnouncer(announcerOptions);
         await announcer.BroadcastOnceAsync();
 
-        await Task.Delay(200);
+        var sw = Stopwatch.StartNew();
+        while (listener.DroppedPackets == 0 && sw.ElapsedMilliseconds < 2000)
+        {
+            await Task.Delay(25);
+        }
 
         received.Should().BeEmpty("Packets from different ClusterId must be dropped silently (Postcondition P2)");
         listener.DroppedPackets.Should().BeGreaterOrEqualTo(1);

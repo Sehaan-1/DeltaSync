@@ -182,6 +182,9 @@ public sealed class SqliteStateStore : ISqliteStateStore
                 }
             }
 
+            // Trigger incremental Merkle prefix update for directory Pf
+            await UpdateMerklePrefixesAsync(connection, (SqliteTransaction)tx, normalizedPath, cancellationToken).ConfigureAwait(false);
+
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -373,6 +376,9 @@ public sealed class SqliteStateStore : ISqliteStateStore
                 await tombstoneCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            // Trigger incremental Merkle prefix update for directory Pf
+            await UpdateMerklePrefixesAsync(connection, (SqliteTransaction)tx, normalizedPath, cancellationToken).ConfigureAwait(false);
+
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -436,6 +442,323 @@ public sealed class SqliteStateStore : ISqliteStateStore
         }
 
         return null;
+    }
+
+    public async Task<MerkleNode?> GetMerkleNodeAsync(string prefix, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        string normalizedPrefix = MerkleTreeHelper.NormalizePrefix(prefix);
+
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            SELECT prefix, node_hash, child_count, updated_utc_ticks
+            FROM merkle_nodes
+            WHERE prefix = $prefix;";
+        cmd.Parameters.AddWithValue("$prefix", normalizedPrefix);
+
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            string pref = reader.GetString(0);
+            string hash = reader.GetString(1);
+            int count = reader.GetInt32(2);
+            long ticks = reader.GetInt64(3);
+            return new MerkleNode(pref, hash, count, new DateTimeOffset(ticks, TimeSpan.Zero));
+        }
+
+        // If root node """" was queried and table has 0 active files, return canonical empty root node
+        if (normalizedPrefix.Length == 0)
+        {
+            await using var countCmd = connection.CreateCommand();
+            countCmd.CommandText = "SELECT COUNT(*) FROM files WHERE is_deleted = 0;";
+            long fileCount = Convert.ToInt64(await countCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
+            if (fileCount == 0)
+            {
+                return new MerkleNode(string.Empty, MerkleTreeHelper.EmptyNodeHash, 0, DateTimeOffset.UtcNow);
+            }
+        }
+
+        return null;
+    }
+
+    public async Task<DirectoryDifference> GetDirectoryDifferenceAsync(string prefix, string remoteNodeHash, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        string normalizedPrefix = MerkleTreeHelper.NormalizePrefix(prefix);
+
+        var localNode = await GetMerkleNodeAsync(normalizedPrefix, cancellationToken).ConfigureAwait(false);
+
+        bool areIdentical = localNode != null &&
+            !string.IsNullOrWhiteSpace(remoteNodeHash) &&
+            string.Equals(localNode.NodeHash, remoteNodeHash.Trim(), StringComparison.OrdinalIgnoreCase);
+
+        if (areIdentical)
+        {
+            return new DirectoryDifference(
+                normalizedPrefix,
+                true,
+                localNode!.NodeHash,
+                remoteNodeHash,
+                Array.Empty<FileMetadata>(),
+                Array.Empty<MerkleNode>());
+        }
+
+        // Query direct child files
+        var directFiles = new List<FileMetadata>();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using (var fileCmd = connection.CreateCommand())
+        {
+            if (normalizedPrefix.Length == 0)
+            {
+                fileCmd.CommandText = @"
+                    SELECT relative_path, size_bytes, root_hash, modified_utc_ticks, vector_clock_json, is_deleted, version, updated_utc_ticks
+                    FROM files
+                    WHERE is_deleted = 0 AND instr(relative_path, '/') = 0
+                    ORDER BY relative_path COLLATE NOCASE ASC;";
+            }
+            else
+            {
+                fileCmd.CommandText = @"
+                    SELECT relative_path, size_bytes, root_hash, modified_utc_ticks, vector_clock_json, is_deleted, version, updated_utc_ticks
+                    FROM files
+                    WHERE is_deleted = 0
+                      AND relative_path LIKE $prefixMatch ESCAPE '\'
+                      AND instr(substr(relative_path, $prefixLen + 2), '/') = 0
+                    ORDER BY relative_path COLLATE NOCASE ASC;";
+                fileCmd.Parameters.AddWithValue("$prefixMatch", EscapeLike(normalizedPrefix) + "/%");
+                fileCmd.Parameters.AddWithValue("$prefixLen", normalizedPrefix.Length);
+            }
+
+            await using var reader = await fileCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                directFiles.Add(ReadFileMetadata(reader));
+            }
+        }
+
+        // Query immediate child subdirectories from merkle_nodes
+        var directSubdirs = new List<MerkleNode>();
+        await using (var dirCmd = connection.CreateCommand())
+        {
+            if (normalizedPrefix.Length == 0)
+            {
+                dirCmd.CommandText = @"
+                    SELECT prefix, node_hash, child_count, updated_utc_ticks
+                    FROM merkle_nodes
+                    WHERE prefix != '' AND instr(prefix, '/') = 0
+                    ORDER BY prefix COLLATE NOCASE ASC;";
+            }
+            else
+            {
+                dirCmd.CommandText = @"
+                    SELECT prefix, node_hash, child_count, updated_utc_ticks
+                    FROM merkle_nodes
+                    WHERE prefix != $self
+                      AND prefix LIKE $prefixMatch ESCAPE '\'
+                      AND instr(substr(prefix, $prefixLen + 2), '/') = 0
+                    ORDER BY prefix COLLATE NOCASE ASC;";
+                dirCmd.Parameters.AddWithValue("$self", normalizedPrefix);
+                dirCmd.Parameters.AddWithValue("$prefixMatch", EscapeLike(normalizedPrefix) + "/%");
+                dirCmd.Parameters.AddWithValue("$prefixLen", normalizedPrefix.Length);
+            }
+
+            await using var reader = await dirCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                string p = reader.GetString(0);
+                string h = reader.GetString(1);
+                int c = reader.GetInt32(2);
+                long ticks = reader.GetInt64(3);
+                directSubdirs.Add(new MerkleNode(p, h, c, new DateTimeOffset(ticks, TimeSpan.Zero)));
+            }
+        }
+
+        return new DirectoryDifference(
+            normalizedPrefix,
+            false,
+            localNode?.NodeHash,
+            remoteNodeHash,
+            directFiles,
+            directSubdirs);
+    }
+
+    public async Task RebuildMerkleTreeAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var tx = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            await using (var clearCmd = connection.CreateCommand())
+            {
+                clearCmd.Transaction = (SqliteTransaction)tx;
+                clearCmd.CommandText = "DELETE FROM merkle_nodes;";
+                await clearCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var paths = new List<string>();
+            await using (var listCmd = connection.CreateCommand())
+            {
+                listCmd.Transaction = (SqliteTransaction)tx;
+                listCmd.CommandText = "SELECT relative_path FROM files WHERE is_deleted = 0 ORDER BY length(relative_path) DESC;";
+                await using var reader = await listCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    paths.Add(reader.GetString(0));
+                }
+            }
+
+            foreach (string path in paths)
+            {
+                await UpdateMerklePrefixesAsync(connection, (SqliteTransaction)tx, path, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (paths.Count == 0)
+            {
+                await using var rootCmd = connection.CreateCommand();
+                rootCmd.Transaction = (SqliteTransaction)tx;
+                rootCmd.CommandText = @"
+                    INSERT INTO merkle_nodes (prefix, node_hash, child_count, updated_utc_ticks)
+                    VALUES ('', $hash, 0, $now)
+                    ON CONFLICT(prefix) DO NOTHING;";
+                rootCmd.Parameters.AddWithValue("$hash", MerkleTreeHelper.EmptyNodeHash);
+                rootCmd.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+                await rootCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    private static async Task UpdateMerklePrefixesAsync(
+        SqliteConnection connection,
+        SqliteTransaction tx,
+        string normalizedFilePath,
+        CancellationToken cancellationToken)
+    {
+        var prefixChain = MerkleTreeHelper.GetPrefixChain(normalizedFilePath);
+        long nowTicks = DateTime.UtcNow.Ticks;
+
+        foreach (string prefix in prefixChain)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // 1. Direct active files under prefix
+            var directFiles = new List<(string Name, string RootHash)>();
+            await using (var fileCmd = connection.CreateCommand())
+            {
+                fileCmd.Transaction = tx;
+                if (prefix.Length == 0)
+                {
+                    fileCmd.CommandText = @"
+                        SELECT relative_path, root_hash 
+                        FROM files 
+                        WHERE is_deleted = 0 AND instr(relative_path, '/') = 0 
+                        ORDER BY relative_path COLLATE NOCASE ASC;";
+                }
+                else
+                {
+                    fileCmd.CommandText = @"
+                        SELECT relative_path, root_hash 
+                        FROM files 
+                        WHERE is_deleted = 0 
+                          AND relative_path LIKE $prefixMatch ESCAPE '\'
+                          AND instr(substr(relative_path, $prefixLen + 2), '/') = 0
+                        ORDER BY relative_path COLLATE NOCASE ASC;";
+                    fileCmd.Parameters.AddWithValue("$prefixMatch", EscapeLike(prefix) + "/%");
+                    fileCmd.Parameters.AddWithValue("$prefixLen", prefix.Length);
+                }
+
+                await using var reader = await fileCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    string path = reader.GetString(0);
+                    string hash = reader.GetString(1);
+                    string fileName = prefix.Length == 0 ? path : path[(prefix.Length + 1)..];
+                    directFiles.Add((fileName, hash));
+                }
+            }
+
+            // 2. Immediate child subdirectories from merkle_nodes
+            var directSubdirs = new List<(string Name, string NodeHash, int ChildCount)>();
+            await using (var dirCmd = connection.CreateCommand())
+            {
+                dirCmd.Transaction = tx;
+                if (prefix.Length == 0)
+                {
+                    dirCmd.CommandText = @"
+                        SELECT prefix, node_hash, child_count 
+                        FROM merkle_nodes 
+                        WHERE prefix != '' AND instr(prefix, '/') = 0 
+                        ORDER BY prefix COLLATE NOCASE ASC;";
+                }
+                else
+                {
+                    dirCmd.CommandText = @"
+                        SELECT prefix, node_hash, child_count 
+                        FROM merkle_nodes 
+                        WHERE prefix != $self 
+                          AND prefix LIKE $prefixMatch ESCAPE '\'
+                          AND instr(substr(prefix, $prefixLen + 2), '/') = 0 
+                        ORDER BY prefix COLLATE NOCASE ASC;";
+                    dirCmd.Parameters.AddWithValue("$self", prefix);
+                    dirCmd.Parameters.AddWithValue("$prefixMatch", EscapeLike(prefix) + "/%");
+                    dirCmd.Parameters.AddWithValue("$prefixLen", prefix.Length);
+                }
+
+                await using var reader = await dirCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    string subPrefix = reader.GetString(0);
+                    string hash = reader.GetString(1);
+                    int count = reader.GetInt32(2);
+                    string dirName = prefix.Length == 0 ? subPrefix : subPrefix[(prefix.Length + 1)..];
+                    directSubdirs.Add((dirName, hash, count));
+                }
+            }
+
+            int totalChildCount = directFiles.Count + directSubdirs.Sum(s => s.ChildCount);
+
+            if (directFiles.Count == 0 && directSubdirs.Count == 0 && prefix.Length > 0)
+            {
+                await using var delCmd = connection.CreateCommand();
+                delCmd.Transaction = tx;
+                delCmd.CommandText = "DELETE FROM merkle_nodes WHERE prefix = $prefix;";
+                delCmd.Parameters.AddWithValue("$prefix", prefix);
+                await delCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                string nodeHash = MerkleTreeHelper.ComputeNodeHash(
+                    directFiles,
+                    directSubdirs.Select(s => (s.Name, s.NodeHash)));
+
+                await using var upsertCmd = connection.CreateCommand();
+                upsertCmd.Transaction = tx;
+                upsertCmd.CommandText = @"
+                    INSERT INTO merkle_nodes (prefix, node_hash, child_count, updated_utc_ticks)
+                    VALUES ($prefix, $hash, $count, $now)
+                    ON CONFLICT(prefix) DO UPDATE SET node_hash = $hash, child_count = $count, updated_utc_ticks = $now;";
+                upsertCmd.Parameters.AddWithValue("$prefix", prefix);
+                upsertCmd.Parameters.AddWithValue("$hash", nodeHash);
+                upsertCmd.Parameters.AddWithValue("$count", totalChildCount);
+                upsertCmd.Parameters.AddWithValue("$now", nowTicks);
+                await upsertCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static string EscapeLike(string value)
+    {
+        return value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
     }
 
     private static FileMetadata ReadFileMetadata(DbDataReader reader)
