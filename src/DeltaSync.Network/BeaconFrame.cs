@@ -66,6 +66,19 @@ public sealed record BeaconFrame : IEquatable<BeaconFrame>
     }
 
     /// <summary>
+    /// Constructs a valid BeaconFrame using CurrentVersion and ExpectedMagic.
+    /// </summary>
+    public BeaconFrame(
+        Guid clusterId,
+        byte[] peerIdHash,
+        ushort listenPort,
+        ulong sequence = 0,
+        long timestampUnixMs = 0)
+        : this(ExpectedMagic, CurrentVersion, clusterId, peerIdHash, listenPort, sequence, timestampUnixMs)
+    {
+    }
+
+    /// <summary>
     /// Computes the canonical 32-byte SHA-256 hash of a UTF-8 peer identifier.
     /// </summary>
     public static byte[] ComputePeerIdHash(string peerId)
