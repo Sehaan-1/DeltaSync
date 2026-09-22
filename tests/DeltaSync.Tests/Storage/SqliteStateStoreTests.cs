@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using DeltaSync.Core.Causality;
@@ -422,32 +423,62 @@ public sealed class SqliteStateStoreTests : IDisposable
     [Fact]
     public async Task SqliteStateStore_ConcurrentReadWrite_Test()
     {
-        // Arrange
+        // Arrange: Launch background writer updating 500 files; concurrently execute 10 reader threads
         await using var store = await CreateInitializedStoreAsync();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var readerLatencies = new ConcurrentBag<double>();
+        var readerExceptions = new ConcurrentBag<Exception>();
 
-        // Background writer writing 50 files
+        const int targetFileCount = 500;
+        const int readerThreadCount = 10;
+
+        // Background writer updating 500 files
         var writerTask = Task.Run(async () =>
         {
-            for (int i = 0; i < 50; i++)
+            for (int i = 0; i < targetFileCount; i++)
             {
                 byte[] hash = SHA256.HashData(BitConverter.GetBytes(i));
                 var chunks = new List<ChunkDescriptor> { new(0, 0, 1024, hash) };
-                var file = new FileMetadata($"dir/file_{i}.dat", 1024, new string('f', 64), DateTimeOffset.UtcNow);
+                var file = new FileMetadata($"dir_{i % 10}/file_{i}.dat", 1024, Convert.ToHexString(hash).ToLowerInvariant(), DateTimeOffset.UtcNow);
                 await store.UpsertFileAsync(file, chunks);
-                await Task.Delay(5);
             }
         });
 
-        // 5 concurrent reader tasks querying GetFileAsync and ProbeChunksAsync
-        var readerTasks = Enumerable.Range(0, 5).Select(readerId => Task.Run(async () =>
+        // 10 concurrent reader threads probing chunks, reading files, querying Merkle nodes
+        var readerTasks = Enumerable.Range(0, readerThreadCount).Select(readerId => Task.Run(async () =>
         {
+            var sw = new Stopwatch();
             while (!cts.Token.IsCancellationRequested)
             {
-                int target = Random.Shared.Next(0, 50);
-                await store.GetFileAsync($"dir/file_{target}.dat");
-                await store.ProbeChunksAsync(new[] { target.ToString("x64") });
-                await Task.Delay(2);
+                try
+                {
+                    int target = Random.Shared.Next(0, targetFileCount);
+                    string targetPath = $"dir_{target % 10}/file_{target}.dat";
+                    string targetHash = target.ToString("x64");
+                    string targetPrefix = $"dir_{target % 10}";
+
+                    // 1. GetFileAsync
+                    sw.Restart();
+                    await store.GetFileAsync(targetPath);
+                    sw.Stop();
+                    readerLatencies.Add(sw.Elapsed.TotalMilliseconds);
+
+                    // 2. ProbeChunksAsync
+                    sw.Restart();
+                    await store.ProbeChunksAsync(new[] { targetHash });
+                    sw.Stop();
+                    readerLatencies.Add(sw.Elapsed.TotalMilliseconds);
+
+                    // 3. GetMerkleNodeAsync
+                    sw.Restart();
+                    await store.GetMerkleNodeAsync(targetPrefix);
+                    sw.Stop();
+                    readerLatencies.Add(sw.Elapsed.TotalMilliseconds);
+                }
+                catch (Exception ex) when (!cts.Token.IsCancellationRequested)
+                {
+                    readerExceptions.Add(ex);
+                }
             }
         })).ToArray();
 
@@ -455,8 +486,19 @@ public sealed class SqliteStateStoreTests : IDisposable
         cts.Cancel();
         await Task.WhenAll(readerTasks);
 
+        // Assert 0 exceptions (no SQLITE_BUSY, no database locked errors)
+        readerExceptions.Should().BeEmpty("Readers must experience 0 SQLITE_BUSY or locking errors during active writes");
+
+        // Assert latency requirements: p95 read latency < 10 ms
+        readerLatencies.Should().NotBeEmpty();
+        var sorted = readerLatencies.OrderBy(x => x).ToList();
+        int p95Index = Math.Min((int)(sorted.Count * 0.95), sorted.Count - 1);
+        double p95 = sorted[p95Index];
+
+        p95.Should().BeLessThan(10.0, $"Spec §10 Check 4 requires p95 read latency < 10 ms under 500-file writes. Measured p95: {p95:F2} ms across {sorted.Count} reads.");
+
         var allFiles = await store.GetAllFilesAsync();
-        allFiles.Count.Should().Be(50);
+        allFiles.Count.Should().Be(targetFileCount);
     }
 
     [Fact]
@@ -513,5 +555,300 @@ public sealed class SqliteStateStoreTests : IDisposable
 
         var chunks = await store.GetFileChunksAsync("empty.bin");
         chunks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SqliteStateStore_MerkleTree_IncrementalUpdate_Test()
+    {
+        // Arrange
+        await using var store = await CreateInitializedStoreAsync();
+
+        // 0. Empty root node verification
+        var rootEmpty = await store.GetMerkleNodeAsync("");
+        rootEmpty.Should().NotBeNull();
+        rootEmpty!.Prefix.Should().Be(string.Empty);
+        rootEmpty.NodeHash.Should().Be(MerkleTreeHelper.EmptyNodeHash);
+        rootEmpty.ChildCount.Should().Be(0);
+
+        // 1. Add docs/arch/spec.md
+        byte[] specHash0 = SHA256.HashData(new byte[] { 10, 20 });
+        byte[] specHash1 = SHA256.HashData(new byte[] { 30, 40 });
+        byte[] specRootHash1 = SHA256.HashData(new byte[] { 10, 20, 30, 40 });
+
+        var specChunks1 = new List<ChunkDescriptor>
+        {
+            new(0, 0, 1024, specHash0),
+            new(1, 1024, 1024, specHash1)
+        };
+        var fileSpec1 = new FileMetadata(
+            "docs/arch/spec.md",
+            2048,
+            Convert.ToHexString(specRootHash1).ToLowerInvariant(),
+            DateTimeOffset.UtcNow
+        );
+
+        await store.UpsertFileAsync(fileSpec1, specChunks1);
+
+        // Verify prefixes "", "docs", "docs/arch" exist and are valid
+        var nodeDocsArch = await store.GetMerkleNodeAsync("docs/arch");
+        nodeDocsArch.Should().NotBeNull();
+        nodeDocsArch!.ChildCount.Should().Be(1);
+
+        // Verify trailing slash handling in GetMerkleNodeAsync
+        var nodeDocsArchSlash = await store.GetMerkleNodeAsync("docs/arch/");
+        nodeDocsArchSlash.Should().NotBeNull();
+        nodeDocsArchSlash!.NodeHash.Should().Be(nodeDocsArch.NodeHash);
+
+        var nodeDocs = await store.GetMerkleNodeAsync("docs");
+        nodeDocs.Should().NotBeNull();
+        nodeDocs!.ChildCount.Should().Be(1);
+
+        var nodeDocsSlash = await store.GetMerkleNodeAsync("docs/");
+        nodeDocsSlash.Should().NotBeNull();
+        nodeDocsSlash!.NodeHash.Should().Be(nodeDocs.NodeHash);
+
+        var nodeRoot1 = await store.GetMerkleNodeAsync("");
+        nodeRoot1.Should().NotBeNull();
+        nodeRoot1!.ChildCount.Should().Be(1);
+        nodeRoot1.NodeHash.Should().NotBe(MerkleTreeHelper.EmptyNodeHash);
+
+        // 2. Add src/app.cs
+        byte[] appHash = SHA256.HashData(new byte[] { 50, 60 });
+        var appChunks = new List<ChunkDescriptor> { new(0, 0, 1024, appHash) };
+        var fileApp = new FileMetadata(
+            "src/app.cs",
+            1024,
+            Convert.ToHexString(appHash).ToLowerInvariant(),
+            DateTimeOffset.UtcNow
+        );
+
+        await store.UpsertFileAsync(fileApp, appChunks);
+
+        var nodeSrc = await store.GetMerkleNodeAsync("src/");
+        nodeSrc.Should().NotBeNull();
+        nodeSrc!.ChildCount.Should().Be(1);
+        string srcHashBefore = nodeSrc.NodeHash;
+
+        var nodeRoot2 = await store.GetMerkleNodeAsync("");
+        nodeRoot2!.ChildCount.Should().Be(2);
+        nodeRoot2.NodeHash.Should().NotBe(nodeRoot1.NodeHash);
+
+        // 3. Modify docs/arch/spec.md with new content
+        byte[] specHashV2 = SHA256.HashData(new byte[] { 99, 99 });
+        var specChunks2 = new List<ChunkDescriptor> { new(0, 0, 1024, specHashV2) };
+        var fileSpec2 = new FileMetadata(
+            "docs/arch/spec.md",
+            1024,
+            Convert.ToHexString(specHashV2).ToLowerInvariant(),
+            DateTimeOffset.UtcNow
+        );
+
+        await store.UpsertFileAsync(fileSpec2, specChunks2);
+
+        // Invariant: Modifying docs/arch/spec.md must not change src/ prefix hash
+        var nodeSrcAfter = await store.GetMerkleNodeAsync("src/");
+        nodeSrcAfter.Should().NotBeNull();
+        nodeSrcAfter!.NodeHash.Should().Be(srcHashBefore, "modifying docs/arch/spec.md must not change src/ prefix hash");
+
+        var nodeDocsArchAfter = await store.GetMerkleNodeAsync("docs/arch");
+        nodeDocsArchAfter!.NodeHash.Should().NotBe(nodeDocsArch.NodeHash, "docs/arch must update when spec.md is modified");
+
+        var nodeDocsAfter = await store.GetMerkleNodeAsync("docs");
+        nodeDocsAfter!.NodeHash.Should().NotBe(nodeDocs.NodeHash, "docs must update when child spec.md is modified");
+
+        var nodeRoot3 = await store.GetMerkleNodeAsync("");
+        nodeRoot3!.NodeHash.Should().NotBe(nodeRoot2.NodeHash, "root must update when spec.md is modified");
+
+        // 4. Directory Difference Reconciliation
+        // Identical case
+        var identicalDiff = await store.GetDirectoryDifferenceAsync("src", srcHashBefore);
+        identicalDiff.AreIdentical.Should().BeTrue();
+        identicalDiff.Files.Should().BeEmpty();
+        identicalDiff.Subdirectories.Should().BeEmpty();
+
+        // Divergent root case
+        var divergentDiff = await store.GetDirectoryDifferenceAsync("", "0000000000000000000000000000000000000000000000000000000000000000");
+        divergentDiff.AreIdentical.Should().BeFalse();
+        divergentDiff.Subdirectories.Should().HaveCount(2); // "docs" and "src"
+        divergentDiff.Subdirectories.Select(s => s.Prefix).Should().Contain(new[] { "docs", "src" });
+
+        // 5. Delete docs/arch/spec.md
+        bool deleted = await store.DeleteFileAsync("docs/arch/spec.md");
+        deleted.Should().BeTrue();
+
+        // Pruned prefixes
+        var nodeDocsArchDeleted = await store.GetMerkleNodeAsync("docs/arch");
+        nodeDocsArchDeleted.Should().BeNull("empty non-root directory prefix must be pruned from merkle_nodes");
+
+        var nodeDocsDeleted = await store.GetMerkleNodeAsync("docs");
+        nodeDocsDeleted.Should().BeNull("empty non-root directory prefix must be pruned from merkle_nodes");
+
+        // src/ prefix hash still unchanged
+        var nodeSrcFinal = await store.GetMerkleNodeAsync("src");
+        nodeSrcFinal!.NodeHash.Should().Be(srcHashBefore, "src/ prefix hash must remain unchanged after docs deletion");
+
+        var nodeRootFinal = await store.GetMerkleNodeAsync("");
+        nodeRootFinal!.ChildCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SqliteStateStore_Differential_Test()
+    {
+        // Arrange: 1,000 randomized operations against SqliteStateStore and MemoryStateStore
+        await using var sqliteStore = await CreateInitializedStoreAsync();
+        using var memoryStore = new MemoryStateStore();
+
+        var prng = new Random(42);
+        var activePaths = new List<string>();
+
+        // Act: 1,000 operations
+        for (int op = 0; op < 1000; op++)
+        {
+            int action = prng.Next(100);
+
+            if (action < 40 || activePaths.Count == 0)
+            {
+                // Add or update file
+                string dir = prng.Next(3) switch
+                {
+                    0 => "src",
+                    1 => "docs/arch",
+                    _ => ""
+                };
+                string fileName = $"file_{prng.Next(15)}.dat";
+                string path = string.IsNullOrEmpty(dir) ? fileName : $"{dir}/{fileName}";
+
+                int chunkCount = prng.Next(1, 4);
+                var chunks = new List<ChunkDescriptor>();
+                long offset = 0;
+                for (int c = 0; c < chunkCount; c++)
+                {
+                    byte[] chunkHash = SHA256.HashData(BitConverter.GetBytes(prng.Next(1000)));
+                    chunks.Add(new ChunkDescriptor(c, offset, 512, chunkHash));
+                    offset += 512;
+                }
+
+                byte[] rootHashBytes = SHA256.HashData(BitConverter.GetBytes(prng.Next(100000)));
+                var meta = new FileMetadata(
+                    path,
+                    chunkCount * 512L,
+                    Convert.ToHexString(rootHashBytes).ToLowerInvariant(),
+                    DateTimeOffset.UtcNow
+                );
+
+                await sqliteStore.UpsertFileAsync(meta, chunks);
+                await memoryStore.UpsertFileAsync(meta, chunks);
+
+                if (!activePaths.Contains(path, StringComparer.OrdinalIgnoreCase))
+                {
+                    activePaths.Add(path);
+                }
+            }
+            else if (action < 55)
+            {
+                // Delete random active file
+                int idx = prng.Next(activePaths.Count);
+                string path = activePaths[idx];
+                activePaths.RemoveAt(idx);
+
+                bool delSqlite = await sqliteStore.DeleteFileAsync(path);
+                bool delMemory = await memoryStore.DeleteFileAsync(path);
+                delSqlite.Should().Be(delMemory);
+            }
+            else if (action < 70)
+            {
+                // Query file metadata
+                string path = activePaths.Count > 0 && prng.Next(2) == 0
+                    ? activePaths[prng.Next(activePaths.Count)]
+                    : $"random_{prng.Next(100)}.txt";
+
+                var fSqlite = await sqliteStore.GetFileAsync(path);
+                var fMemory = await memoryStore.GetFileAsync(path);
+
+                if (fSqlite == null)
+                {
+                    fMemory.Should().BeNull();
+                }
+                else
+                {
+                    fMemory.Should().NotBeNull();
+                    fSqlite.RelativePath.Should().Be(fMemory!.RelativePath);
+                    fSqlite.SizeBytes.Should().Be(fMemory.SizeBytes);
+                    fSqlite.RootHash.Should().Be(fMemory.RootHash);
+                    fSqlite.IsDeleted.Should().Be(fMemory.IsDeleted);
+                }
+            }
+            else if (action < 80)
+            {
+                // Probe chunks
+                var probeList = Enumerable.Range(0, 5)
+                    .Select(_ => prng.Next(1000).ToString("x64"))
+                    .ToList();
+
+                var pSqlite = await sqliteStore.ProbeChunksAsync(probeList);
+                var pMemory = await memoryStore.ProbeChunksAsync(probeList);
+
+                pSqlite.LocalCount.Should().Be(pMemory.LocalCount);
+                pSqlite.MissingCount.Should().Be(pMemory.MissingCount);
+                pSqlite.LocalHashes.Should().BeEquivalentTo(pMemory.LocalHashes);
+                pSqlite.MissingHashes.Should().BeEquivalentTo(pMemory.MissingHashes);
+            }
+            else if (action < 90)
+            {
+                // Query Merkle Node
+                string prefix = prng.Next(4) switch
+                {
+                    0 => "",
+                    1 => "src",
+                    2 => "docs",
+                    _ => "docs/arch"
+                };
+
+                var mSqlite = await sqliteStore.GetMerkleNodeAsync(prefix);
+                var mMemory = await memoryStore.GetMerkleNodeAsync(prefix);
+
+                if (mSqlite == null)
+                {
+                    mMemory.Should().BeNull();
+                }
+                else
+                {
+                    mMemory.Should().NotBeNull();
+                    mSqlite.NodeHash.Should().Be(mMemory!.NodeHash);
+                    mSqlite.ChildCount.Should().Be(mMemory.ChildCount);
+                }
+            }
+            else
+            {
+                // Query Directory Difference
+                string prefix = prng.Next(2) == 0 ? "" : "src";
+                string testHash = prng.Next(2) == 0 ? MerkleTreeHelper.EmptyNodeHash : "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+                var dSqlite = await sqliteStore.GetDirectoryDifferenceAsync(prefix, testHash);
+                var dMemory = await memoryStore.GetDirectoryDifferenceAsync(prefix, testHash);
+
+                dSqlite.AreIdentical.Should().Be(dMemory.AreIdentical);
+                dSqlite.Files.Count.Should().Be(dMemory.Files.Count);
+                dSqlite.Subdirectories.Count.Should().Be(dMemory.Subdirectories.Count);
+            }
+        }
+
+        // Final exhaustive validation: 100% agreement
+        var allSqlite = await sqliteStore.GetAllFilesAsync(includeDeleted: true);
+        var allMemory = await memoryStore.GetAllFilesAsync(includeDeleted: true);
+        allSqlite.Count.Should().Be(allMemory.Count);
+        for (int i = 0; i < allSqlite.Count; i++)
+        {
+            allSqlite[i].RelativePath.Should().Be(allMemory[i].RelativePath);
+            allSqlite[i].RootHash.Should().Be(allMemory[i].RootHash);
+            allSqlite[i].IsDeleted.Should().Be(allMemory[i].IsDeleted);
+        }
+
+        var rootSqlite = await sqliteStore.GetMerkleNodeAsync("");
+        var rootMemory = await memoryStore.GetMerkleNodeAsync("");
+        rootSqlite.Should().NotBeNull();
+        rootMemory.Should().NotBeNull();
+        rootSqlite!.NodeHash.Should().Be(rootMemory!.NodeHash);
+        rootSqlite.ChildCount.Should().Be(rootMemory.ChildCount);
     }
 }
