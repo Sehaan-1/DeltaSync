@@ -145,7 +145,6 @@ public class PeerDiscoveryEngineIntegrationTests
 
         var optionsA = new BeaconOptions
         {
-            MulticastAddress = IPAddress.Loopback,
             MulticastPort = port,
             ClusterId = clusterId,
             PeerId = "node-A",
@@ -155,7 +154,6 @@ public class PeerDiscoveryEngineIntegrationTests
 
         var optionsB = new BeaconOptions
         {
-            MulticastAddress = IPAddress.Loopback,
             MulticastPort = port,
             ClusterId = clusterId,
             PeerId = "node-B",
