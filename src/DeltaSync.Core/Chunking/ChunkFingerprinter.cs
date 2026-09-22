@@ -32,7 +32,8 @@ public static class ChunkFingerprinter
     }
 
     /// <summary>
-    /// Reads a Stream to completion, partitions into FastCDC chunks, and generates a FileManifest.
+    /// Reads a Stream to completion, partitions into FastCDC chunks, and generates a FileManifest
+    /// using a bounded sliding window buffer without loading the entire stream into memory.
     /// </summary>
     public static FileManifest CreateManifest(string relativePath, Stream stream, FastCdcConfig? config = null)
     {
@@ -43,9 +44,7 @@ public static class ChunkFingerprinter
             return CreateManifest(relativePath, seg.AsMemory(), config);
         }
 
-        using var memory = new MemoryStream();
-        stream.CopyTo(memory);
-        return CreateManifest(relativePath, memory.ToArray(), config);
+        return StreamingFastCdcReader.ReadManifest(relativePath, stream, config);
     }
 
     /// <summary>
