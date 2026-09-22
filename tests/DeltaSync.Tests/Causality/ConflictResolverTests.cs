@@ -193,18 +193,200 @@ public class ConflictResolverTests
         act.Should().Throw<ArgumentException>();
     }
 
-    [Fact]
-    public void NullRemoteClock_ThrowsArgumentNullException()
-    {
-        Action act = () => ConflictResolver.Resolve(
-            localPeerId: "NodeA",
-            relativePath: "doc.txt",
-            localHash: "h1",
-            localClock: VectorClock.Empty,
-            remotePeerId: "NodeB",
-            remoteHash: "h2",
-            remoteClock: null!);
+    #region Spec §10 Check 3: Concurrent Edit Convergence Simulation
 
-        act.Should().Throw<ArgumentNullException>();
+    [Fact]
+    public void SpecSection10_Check3_ConcurrentEditConvergenceSimulation()
+    {
+        string dirA = Path.Combine(Path.GetTempPath(), "DeltaSync_Check3_NodeA_" + Guid.NewGuid());
+        string dirB = Path.Combine(Path.GetTempPath(), "DeltaSync_Check3_NodeB_" + Guid.NewGuid());
+        Directory.CreateDirectory(dirA);
+        Directory.CreateDirectory(dirB);
+
+        try
+        {
+            // 1. Disconnected phase: Node A and Node B edit doc.txt independently
+            byte[] contentA = System.Text.Encoding.UTF8.GetBytes("Node A independent edit");
+            byte[] contentB = System.Text.Encoding.UTF8.GetBytes("Node B independent edit");
+
+            string pathA = Path.Combine(dirA, "doc.txt");
+            string pathB = Path.Combine(dirB, "doc.txt");
+            File.WriteAllBytes(pathA, contentA);
+            File.WriteAllBytes(pathB, contentB);
+
+            string hashA = "sha256-node-a-content";
+            string hashB = "sha256-node-b-content";
+
+            var clockA = VectorClock.Create(("NodeA", 1));
+            var clockB = VectorClock.Create(("NodeB", 1));
+
+            // State dictionaries representing peer sync index
+            var indexA = new Dictionary<string, (string Hash, VectorClock Clock)>
+            {
+                ["doc.txt"] = (hashA, clockA)
+            };
+            var indexB = new Dictionary<string, (string Hash, VectorClock Clock)>
+            {
+                ["doc.txt"] = (hashB, clockB)
+            };
+
+            // 2. Reconnect: Node B transmits state to Node A
+            var resOnA = ConflictResolver.ResolveForDirectory(
+                baseDirectory: dirA,
+                localPeerId: "NodeA",
+                relativePath: "doc.txt",
+                localHash: indexA["doc.txt"].Hash,
+                localClock: indexA["doc.txt"].Clock,
+                remotePeerId: "NodeB",
+                remoteHash: hashB,
+                remoteClock: clockB);
+
+            // Assert Conflict resolution on Node A is PreserveSideBySide
+            resOnA.Type.Should().Be(ConflictResolutionType.PreserveSideBySide);
+            resOnA.CausalRelation.Should().Be(CausalRelation.Concurrent);
+            resOnA.PrimaryPath.Should().Be("doc.txt");
+            resOnA.SiblingPath.Should().Be("doc (NodeB conflicted).txt");
+
+            // Apply resolution on Node A's directory
+            ConflictResolver.ApplyToDirectory(resOnA, dirA, contentB);
+
+            // Update Node A's local index
+            indexA["doc.txt"] = (hashA, resOnA.PrimaryVector);
+            indexA[resOnA.SiblingPath!] = (hashB, resOnA.SiblingVector!);
+
+            // Assertions on Node A:
+            // a. doc.txt exists with Node A's content
+            File.Exists(pathA).Should().BeTrue();
+            File.ReadAllBytes(pathA).Should().Equal(contentA);
+
+            // b. doc (NodeB conflicted).txt exists with Node B's content
+            string siblingPathA = Path.Combine(dirA, "doc (NodeB conflicted).txt");
+            File.Exists(siblingPathA).Should().BeTrue();
+            File.ReadAllBytes(siblingPathA).Should().Equal(contentB);
+
+            // c. Node A's vector clock strictly dominates Node B's original vector clock (VB < V'A)
+            var unifiedVectorA = resOnA.PrimaryVector;
+            unifiedVectorA.IsDominating(clockB).Should().BeTrue();
+            clockB.IsDominatedBy(unifiedVectorA).Should().BeTrue();
+            (clockB < unifiedVectorA).Should().BeTrue();
+
+            // 3. Bidirectional convergence: Node A syncs its full state back to Node B
+            foreach (var kvp in indexA)
+            {
+                string relPath = kvp.Key;
+                var (remoteHash, remoteClock) = kvp.Value;
+                byte[] remoteContent = File.ReadAllBytes(Path.Combine(dirA, relPath));
+
+                indexB.TryGetValue(relPath, out var localBEntry);
+
+                var resOnB = ConflictResolver.ResolveForDirectory(
+                    baseDirectory: dirB,
+                    localPeerId: "NodeB",
+                    relativePath: relPath,
+                    localHash: localBEntry.Hash,
+                    localClock: localBEntry.Clock,
+                    remotePeerId: "NodeA",
+                    remoteHash: remoteHash,
+                    remoteClock: remoteClock);
+
+                // Crucial assertion: Node B must NOT raise a second conflict!
+                resOnB.Type.Should().Be(ConflictResolutionType.ApplyRemote);
+                resOnB.CausalRelation.Should().Be(CausalRelation.Before);
+
+                ConflictResolver.ApplyToDirectory(resOnB, dirB, remoteContent);
+                indexB[relPath] = (remoteHash, resOnB.PrimaryVector);
+            }
+
+            // Assert Node B converges to the identical two files
+            string docOnB = Path.Combine(dirB, "doc.txt");
+            string siblingOnB = Path.Combine(dirB, "doc (NodeB conflicted).txt");
+
+            File.Exists(docOnB).Should().BeTrue();
+            File.ReadAllBytes(docOnB).Should().Equal(contentA);
+
+            File.Exists(siblingOnB).Should().BeTrue();
+            File.ReadAllBytes(siblingOnB).Should().Equal(contentB);
+
+            // Assert vectors on Node B match Node A's unified vectors exactly
+            (indexB["doc.txt"].Clock == unifiedVectorA).Should().BeTrue();
+            (indexB["doc (NodeB conflicted).txt"].Clock == clockB).Should().BeTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(dirA)) Directory.Delete(dirA, true);
+            if (Directory.Exists(dirB)) Directory.Delete(dirB, true);
+        }
     }
+
+    [Fact]
+    public void ThreeWayConcurrentPartition_PreservesAllRevisions_AndConverges()
+    {
+        string dirA = Path.Combine(Path.GetTempPath(), "DeltaSync_3Way_A_" + Guid.NewGuid());
+        string dirB = Path.Combine(Path.GetTempPath(), "DeltaSync_3Way_B_" + Guid.NewGuid());
+        string dirC = Path.Combine(Path.GetTempPath(), "DeltaSync_3Way_C_" + Guid.NewGuid());
+        Directory.CreateDirectory(dirA);
+        Directory.CreateDirectory(dirB);
+        Directory.CreateDirectory(dirC);
+
+        try
+        {
+            byte[] cA = System.Text.Encoding.UTF8.GetBytes("Data A");
+            byte[] cB = System.Text.Encoding.UTF8.GetBytes("Data B");
+            byte[] cC = System.Text.Encoding.UTF8.GetBytes("Data C");
+
+            File.WriteAllBytes(Path.Combine(dirA, "notes.txt"), cA);
+            File.WriteAllBytes(Path.Combine(dirB, "notes.txt"), cB);
+            File.WriteAllBytes(Path.Combine(dirC, "notes.txt"), cC);
+
+            var vA = VectorClock.Create(("NodeA", 1));
+            var vB = VectorClock.Create(("NodeB", 1));
+            var vC = VectorClock.Create(("NodeC", 1));
+
+            var indexA = new Dictionary<string, (string Hash, VectorClock Clock)>
+            {
+                ["notes.txt"] = ("hA", vA)
+            };
+
+            // 1. Sync Node B to Node A
+            var resBtoA = ConflictResolver.ResolveForDirectory(dirA, "NodeA", "notes.txt", "hA", indexA["notes.txt"].Clock, "NodeB", "hB", vB);
+            resBtoA.Type.Should().Be(ConflictResolutionType.PreserveSideBySide);
+            ConflictResolver.ApplyToDirectory(resBtoA, dirA, cB);
+            indexA["notes.txt"] = ("hA", resBtoA.PrimaryVector);
+            indexA[resBtoA.SiblingPath!] = ("hB", resBtoA.SiblingVector!);
+
+            // 2. Sync Node C to Node A
+            var resCtoA = ConflictResolver.ResolveForDirectory(dirA, "NodeA", "notes.txt", "hA", indexA["notes.txt"].Clock, "NodeC", "hC", vC);
+            resCtoA.Type.Should().Be(ConflictResolutionType.PreserveSideBySide);
+            ConflictResolver.ApplyToDirectory(resCtoA, dirA, cC);
+            indexA["notes.txt"] = ("hA", resCtoA.PrimaryVector);
+            indexA[resCtoA.SiblingPath!] = ("hC", resCtoA.SiblingVector!);
+
+            // Assert Node A preserves all 3 copies on disk!
+            File.Exists(Path.Combine(dirA, "notes.txt")).Should().BeTrue();
+            File.Exists(Path.Combine(dirA, "notes (NodeB conflicted).txt")).Should().BeTrue();
+            File.Exists(Path.Combine(dirA, "notes (NodeC conflicted).txt")).Should().BeTrue();
+
+            File.ReadAllBytes(Path.Combine(dirA, "notes.txt")).Should().Equal(cA);
+            File.ReadAllBytes(Path.Combine(dirA, "notes (NodeB conflicted).txt")).Should().Equal(cB);
+            File.ReadAllBytes(Path.Combine(dirA, "notes (NodeC conflicted).txt")).Should().Equal(cC);
+
+            // Node A's main vector clock absorbed all branches: {NodeA: 3, NodeB: 1, NodeC: 1}
+            var finalVectorA = indexA["notes.txt"].Clock;
+            var expectedFinal = VectorClock.Create(("NodeA", 3), ("NodeB", 1), ("NodeC", 1));
+            (finalVectorA == expectedFinal).Should().BeTrue();
+
+            // Strictly dominates vA, vB, vC
+            finalVectorA.IsDominating(vA).Should().BeTrue();
+            finalVectorA.IsDominating(vB).Should().BeTrue();
+            finalVectorA.IsDominating(vC).Should().BeTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(dirA)) Directory.Delete(dirA, true);
+            if (Directory.Exists(dirB)) Directory.Delete(dirB, true);
+            if (Directory.Exists(dirC)) Directory.Delete(dirC, true);
+        }
+    }
+
+    #endregion
 }

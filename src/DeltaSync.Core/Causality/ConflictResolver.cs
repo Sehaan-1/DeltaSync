@@ -35,6 +35,83 @@ public sealed record RemoteFileUpdate(
 public static class ConflictResolver
 {
     /// <summary>
+    /// Resolves causality for a file in a local directory, automatically checking for candidate file collisions on disk.
+    /// </summary>
+    public static ConflictResolutionResult ResolveForDirectory(
+        string baseDirectory,
+        string localPeerId,
+        string relativePath,
+        string? localHash,
+        VectorClock? localClock,
+        string remotePeerId,
+        string? remoteHash,
+        VectorClock remoteClock)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
+
+        return Resolve(
+            localPeerId: localPeerId,
+            relativePath: relativePath,
+            localHash: localHash,
+            localClock: localClock,
+            remotePeerId: remotePeerId,
+            remoteHash: remoteHash,
+            remoteClock: remoteClock,
+            pathExists: p => File.Exists(Path.Combine(baseDirectory, p)));
+    }
+
+    /// <summary>
+    /// Applies the resolution action to a local directory, writing remote content to the primary or sibling path.
+    /// Enforces Invariant I2 (zero silent overwrite) by preserving both copies on disk.
+    /// </summary>
+    /// <param name="resolution">The resolution result to apply.</param>
+    /// <param name="baseDirectory">The root directory of the synced folder.</param>
+    /// <param name="remoteContent">The byte payload of the remote file, required if applying remote or preserving side-by-side.</param>
+    public static void ApplyToDirectory(
+        ConflictResolutionResult resolution,
+        string baseDirectory,
+        byte[]? remoteContent = null)
+    {
+        ArgumentNullException.ThrowIfNull(resolution);
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
+
+        switch (resolution.Type)
+        {
+            case ConflictResolutionType.ApplyRemote:
+                if (remoteContent != null)
+                {
+                    string fullPath = Path.Combine(baseDirectory, resolution.PrimaryPath);
+                    string? dir = Path.GetDirectoryName(fullPath);
+                    if (!string.IsNullOrEmpty(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+                    File.WriteAllBytes(fullPath, remoteContent);
+                }
+                break;
+
+            case ConflictResolutionType.PreserveSideBySide:
+                if (!string.IsNullOrEmpty(resolution.SiblingPath) && remoteContent != null)
+                {
+                    string siblingFullPath = Path.Combine(baseDirectory, resolution.SiblingPath);
+                    string? dir = Path.GetDirectoryName(siblingFullPath);
+                    if (!string.IsNullOrEmpty(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+                    File.WriteAllBytes(siblingFullPath, remoteContent);
+                }
+                break;
+
+            case ConflictResolutionType.NoOp:
+            case ConflictResolutionType.RejectObsolete:
+            case ConflictResolutionType.MergeIdentical:
+            default:
+                break;
+        }
+    }
+
+    /// <summary>
     /// Resolves the causal relationship and required reconciliation action between local and remote states.
     /// </summary>
     /// <param name="localPeerId">The identifier of this local node.</param>
