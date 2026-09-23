@@ -36,3 +36,8 @@ graphify-out/
 scratch/
 skills-lock.json
 
+## Private docs (never push to GitHub)
+docs/cuecards/
+docs/lanes/
+docs/siegecraft/
+
