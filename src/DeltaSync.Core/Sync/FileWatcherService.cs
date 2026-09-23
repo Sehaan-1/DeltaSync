@@ -20,6 +20,7 @@ public sealed class FileWatcherService : IFileWatcherService
     private readonly FileSystemWatcher _watcher;
     private readonly Timer _debounceTimer;
     private readonly SemaphoreSlim _processLock = new(1, 1);
+    private readonly SemaphoreSlim _flushLock = new(1, 1);
 
     private bool _isWatching;
     private bool _disposed;
@@ -121,13 +122,83 @@ public sealed class FileWatcherService : IFileWatcherService
     }
 
     /// <summary>
-    /// Flushes and processes all currently pending debounced events immediately.
-    /// Useful for deterministic testing and graceful shutdown.
+    /// Flushes and processes all currently pending debounced events immediately,
+    /// then performs an authoritative reconciliation against the physical filesystem
+    /// to converge SQLite active records and Merkle digests.
+    /// Useful for deterministic testing, graceful shutdown, and recovery after event bursts.
     /// </summary>
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        await ProcessPendingEventsAsync(forceAll: true, cancellationToken).ConfigureAwait(false);
+
+        await _flushLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // 1. Drain and dispatch all currently pending debounced events
+            await ProcessPendingEventsAsync(forceAll: true, cancellationToken).ConfigureAwait(false);
+
+            if (!Directory.Exists(_rootDirectory))
+            {
+                return;
+            }
+
+            // 2. Authoritative reconciliation: enumerate physical files currently under the sync root
+            var filesOnDisk = Directory
+                .EnumerateFiles(_rootDirectory, "*", SearchOption.AllDirectories)
+                .Select(fullPath => Path.GetRelativePath(_rootDirectory, fullPath))
+                .Where(rel => !LocalFileIngestor.IsExcludedPath(rel) && !IsPathSuppressed(rel))
+                .Select(FileManifest.NormalizePath)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // 3. Ingest any files present on disk that are missing or out of sync in SQLite
+            foreach (var relativePath in filesOnDisk)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var record = await _ingestor.StateStore.GetFileAsync(relativePath, cancellationToken).ConfigureAwait(false);
+                string fullPath = Path.Combine(_rootDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));
+
+                bool needsIngest = false;
+                if (record == null || record.IsDeleted)
+                {
+                    needsIngest = true;
+                }
+                else
+                {
+                    var fi = new FileInfo(fullPath);
+                    if (fi.Exists && (fi.Length != record.SizeBytes || fi.LastWriteTimeUtc != record.ModifiedUtc))
+                    {
+                        needsIngest = true;
+                    }
+                }
+
+                if (needsIngest)
+                {
+                    await _ingestor.IngestFileAsync(relativePath, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            // 4. Query active database records and mark deleted any record whose file is no longer on disk
+            var activeRecords = await _ingestor.StateStore.GetAllFilesAsync(
+                includeDeleted: false,
+                cancellationToken).ConfigureAwait(false);
+
+            foreach (var record in activeRecords)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var normalized = FileManifest.NormalizePath(record.RelativePath);
+
+                if (!filesOnDisk.Contains(normalized))
+                {
+                    await _ingestor.DeleteFileAsync(normalized, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            _flushLock.Release();
+        }
     }
 
     private void EnqueueFileSystemEvent(string fullPath, DebounceAction action)
@@ -176,6 +247,11 @@ public sealed class FileWatcherService : IFileWatcherService
                     string normOld = FileManifest.NormalizePath(childOldRel);
                     string normNew = FileManifest.NormalizePath(childNewRel);
 
+                    if (!LocalFileIngestor.IsExcludedPath(normOld) && !IsPathSuppressed(normOld))
+                    {
+                        EnqueueEventInternal(normOld, DebounceAction.Deleted, null);
+                    }
+
                     if (!LocalFileIngestor.IsExcludedPath(normNew) && !IsPathSuppressed(normNew))
                     {
                         EnqueueEventInternal(normNew, DebounceAction.Renamed, normOld);
@@ -189,32 +265,23 @@ public sealed class FileWatcherService : IFileWatcherService
             }
         }
 
-        if (hasOld && hasNew)
+        if (hasOld)
         {
             string normOld = FileManifest.NormalizePath(oldRelative!);
-            string normNew = FileManifest.NormalizePath(newRelative!);
-
-            if (LocalFileIngestor.IsExcludedPath(normNew) || IsPathSuppressed(normNew))
+            if (!LocalFileIngestor.IsExcludedPath(normOld) && !IsPathSuppressed(normOld))
             {
-                // New path is excluded/suppressed; treat old path as deleted
-                if (!LocalFileIngestor.IsExcludedPath(normOld) && !IsPathSuppressed(normOld))
-                {
-                    EnqueueEventInternal(normOld, DebounceAction.Deleted, null);
-                }
-                return;
+                EnqueueEventInternal(normOld, DebounceAction.Deleted, null);
             }
+        }
 
-            EnqueueEventInternal(normNew, DebounceAction.Renamed, normOld);
-        }
-        else if (hasOld)
-        {
-            string normOld = FileManifest.NormalizePath(oldRelative!);
-            EnqueueEventInternal(normOld, DebounceAction.Deleted, null);
-        }
-        else if (hasNew)
+        if (hasNew)
         {
             string normNew = FileManifest.NormalizePath(newRelative!);
-            EnqueueEventInternal(normNew, DebounceAction.CreatedOrChanged, null);
+            if (!LocalFileIngestor.IsExcludedPath(normNew) && !IsPathSuppressed(normNew))
+            {
+                string? normOld = hasOld ? FileManifest.NormalizePath(oldRelative!) : null;
+                EnqueueEventInternal(normNew, DebounceAction.Renamed, normOld);
+            }
         }
     }
 
@@ -416,6 +483,7 @@ public sealed class FileWatcherService : IFileWatcherService
         _debounceTimer.Dispose();
         _watcher.Dispose();
         _processLock.Dispose();
+        _flushLock.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -427,6 +495,7 @@ public sealed class FileWatcherService : IFileWatcherService
         await _debounceTimer.DisposeAsync().ConfigureAwait(false);
         _watcher.Dispose();
         _processLock.Dispose();
+        _flushLock.Dispose();
     }
 
     private enum DebounceAction

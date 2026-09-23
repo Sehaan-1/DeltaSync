@@ -48,6 +48,7 @@ public sealed class LocalFileIngestor
     public string RootDirectory => _rootDirectory;
     public string LocalPeerId => _localPeerId;
     public FastCdcConfig CdcConfig => _cdcConfig;
+    public ISqliteStateStore StateStore => _stateStore;
 
     /// <summary>
     /// Checks whether a given relative path represents an excluded system/metadata path.
