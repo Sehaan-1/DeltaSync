@@ -382,7 +382,26 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         }
 
         var localClock = localMeta.Clock ?? VectorClock.Empty;
-        var remoteClock = summary.RemoteClock ?? VectorClock.Empty;
+        var remoteClock = summary.RemoteClock;
+        bool isRemoteDeleted = summary.RemoteIsDeleted;
+
+        if (remoteClock == null)
+        {
+            var remoteManifest = await _wireProtocol.FetchManifestAsync(channel, normalizedPath, ct).ConfigureAwait(false);
+            if (remoteManifest != null)
+            {
+                remoteClock = remoteManifest.Clock;
+                isRemoteDeleted = remoteManifest.IsDeleted;
+            }
+        }
+
+        remoteClock ??= VectorClock.Empty;
+
+        // If remote never had this file and didn't delete it, local retains it (remote will pull)
+        if (!isRemoteDeleted && remoteClock == VectorClock.Empty)
+        {
+            return false;
+        }
 
         var relation = localClock.Compare(remoteClock);
 
