@@ -19,9 +19,9 @@ public sealed record MerkleRootResponse(Guid ClusterId, bool Matches, string Roo
 
 /// <summary>
 /// Query for directory children under a given normalized prefix ("" for root).
-/// Spec §2.1.
+/// Spec §2.1. Optionally includes the caller's node hash for early O(1) equality cutoff.
 /// </summary>
-public sealed record PrefixDiffRequest(string Prefix);
+public sealed record PrefixDiffRequest(string Prefix, string? NodeHash = null);
 
 /// <summary>
 /// Lightweight wire representation of a tracked file metadata record.
