@@ -8,6 +8,7 @@ obj/
 .vs/
 .idea/
 .vscode/
+.obsidian/
 
 ## Test Results
 TestResults/
@@ -28,7 +29,10 @@ ehthumbs.db
 Desktop.ini
 .DS_Store
 
-## Claude / Tools
+## Claude / Tools / Agents
 .claude/
+.agents/
+graphify-out/
 scratch/
+skills-lock.json
 

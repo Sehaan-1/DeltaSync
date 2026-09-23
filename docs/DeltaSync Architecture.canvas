@@ -1,0 +1,370 @@
+{
+  "nodes": [
+    {
+      "id": "g_network_discov",
+      "type": "group",
+      "x": -80,
+      "y": -60,
+      "width": 840,
+      "height": 620,
+      "label": "Network & Peer Discovery (ADR-0002)",
+      "color": "5"
+    },
+    {
+      "id": "n_beacon_engine",
+      "type": "text",
+      "x": -40,
+      "y": 0,
+      "width": 340,
+      "height": 180,
+      "text": "### UDP Multicast Beacon\n- `UdpBeaconAnnouncer`: periodic heartbeat with jitter (0.8x-1.2x)\n- `UdpBeaconListener`: loopback filter & subnet listen\n- Framing: `BeaconFrame` (magic bytes, cluster ID, port, peer hash)",
+      "color": "5"
+    },
+    {
+      "id": "n_static_provider",
+      "type": "text",
+      "x": -40,
+      "y": 240,
+      "width": 340,
+      "height": 160,
+      "text": "### Static Peer Provider\n- Fallback for non-multicast environments (WAN, cloud, VPN)\n- Exponential backoff retry logic (1s -> 30s)\n- Seed endpoint management",
+      "color": "5"
+    },
+    {
+      "id": "n_peer_registry",
+      "type": "text",
+      "x": 380,
+      "y": 0,
+      "width": 340,
+      "height": 210,
+      "text": "### Peer Registry & Liveness Tracker\n- `PeerRegistry`: thread-safe thread cache of active peers\n- `PeerLivenessTracker`: staggered heartbeat expiration\n- States: `Active`, `Stale` (warning), `Dead` (evicted)\n- Monotonic clock timestamps via `TimeProvider`",
+      "color": "5"
+    },
+    {
+      "id": "n_coord_bgp",
+      "type": "text",
+      "x": 380,
+      "y": 270,
+      "width": 340,
+      "height": 230,
+      "text": "### Connection Coordinator & BGP Tie-Breaker\n- `PeerConnectionCoordinator`: dial & accept management\n- `BgpCollisionTieBreaker`: deterministic simultaneous dial winner:\n  `Higher PeerId -> Inbound Wins, Lower PeerId -> Outbound Wins`\n- Prevents duplicate socket channels & state split",
+      "color": "5"
+    },
+    {
+      "id": "g_causality_conf",
+      "type": "group",
+      "x": 840,
+      "y": -60,
+      "width": 840,
+      "height": 620,
+      "label": "Causality & Conflict Resolution (ADR-0001)",
+      "color": "6"
+    },
+    {
+      "id": "n_vector_clock",
+      "type": "text",
+      "x": 880,
+      "y": 0,
+      "width": 340,
+      "height": 220,
+      "text": "### Vector Clock Causality\n- `VectorClock`: immutable, compact version vector\n- Serialization: binary byte array & JSON dictionary\n- Increment on local change, merge on sync\n- Sub-millisecond comparison efficiency",
+      "color": "6"
+    },
+    {
+      "id": "n_causal_relation",
+      "type": "text",
+      "x": 880,
+      "y": 270,
+      "width": 340,
+      "height": 230,
+      "text": "### Causal Relation Evaluator\n- Determines relation between `ClockA` & `ClockB`:\n  - `Equal`: identical state\n  - `Before`: A preceded B (B fast-forwards)\n  - `After`: A is newer than B\n  - `Concurrent`: conflict detected!",
+      "color": "6"
+    },
+    {
+      "id": "n_conflict_resolver",
+      "type": "text",
+      "x": 1300,
+      "y": 0,
+      "width": 340,
+      "height": 220,
+      "text": "### Conflict Resolver (ADR-0001)\n- Non-destructive sync guarantee\n- Never silenty overwrite concurrent edits\n- Produces `ConflictResolutionResult`:\n  `PreserveSideBySide`, `ApplyRemote`, `NoOp`, or `RejectObsolete`",
+      "color": "6"
+    },
+    {
+      "id": "n_path_helper",
+      "type": "text",
+      "x": 1300,
+      "y": 270,
+      "width": 340,
+      "height": 230,
+      "text": "### Conflicted Path Helper\n- Deterministic rename format:\n  `<filename>.sync-conflict-<timestamp>-<peerId>.<ext>`\n- Atomic filesystem side-by-side branch generation\n- Collision-proof file naming in shared folders",
+      "color": "6"
+    },
+    {
+      "id": "g_fastcdc_delta",
+      "type": "group",
+      "x": -80,
+      "y": 640,
+      "width": 840,
+      "height": 620,
+      "label": "FastCDC Chunking & Delta Transfer (ADR-0004)",
+      "color": "4"
+    },
+    {
+      "id": "n_fastcdc_chunker",
+      "type": "text",
+      "x": -40,
+      "y": 700,
+      "width": 340,
+      "height": 220,
+      "text": "### FastCDC Chunking Engine\n- Content-Defined Chunking using Gear Hashing\n- Normalized sub-chunk boundary detection\n- Config: `Min=16KB`, `Avg=64KB`, `Max=256KB`\n- Shift-invariant deduplication across file shifts",
+      "color": "4"
+    },
+    {
+      "id": "n_chunk_fingerprint",
+      "type": "text",
+      "x": -40,
+      "y": 970,
+      "width": 340,
+      "height": 230,
+      "text": "### Fingerprinting & Manifest\n- `ChunkFingerprinter`: BLAKE3 / SHA-256 integrity\n- `ChunkDescriptor`: offset, length, hash\n- `FileManifest`: ordered sequence of chunks\n- `ManifestDiff`: remote vs local chunk missing set",
+      "color": "4"
+    },
+    {
+      "id": "n_streaming_reader",
+      "type": "text",
+      "x": 380,
+      "y": 700,
+      "width": 340,
+      "height": 220,
+      "text": "### Streaming FastCDC Reader\n- Asynchronous streaming chunk generator\n- Memory-efficient backpressure over network\n- Zero-copy chunk slicing using `ReadOnlyMemory<byte>`",
+      "color": "4"
+    },
+    {
+      "id": "n_delta_reconstructor",
+      "type": "text",
+      "x": 380,
+      "y": 970,
+      "width": 340,
+      "height": 230,
+      "text": "### Delta Reconstructor\n- Rebuilds target file by stitching local cached chunks + streaming remote chunks\n- Verifies byte-level integrity against manifest hash\n- Bandwidth savings of 85-99% on small modifications",
+      "color": "4"
+    },
+    {
+      "id": "g_sqlite_merkle",
+      "type": "group",
+      "x": 840,
+      "y": 640,
+      "width": 840,
+      "height": 620,
+      "label": "Persistence & Merkle State Sync (ADR-0003)",
+      "color": "2"
+    },
+    {
+      "id": "n_sqlite_store",
+      "type": "text",
+      "x": 880,
+      "y": 700,
+      "width": 340,
+      "height": 230,
+      "text": "### Embedded SQLite State Store\n- High-performance local storage (WAL mode enabled)\n- `FileMetadata` & `ChunkLocation` indexes\n- Atomic upserts & reference counting for GC\n- Crash recovery & schema migration verification",
+      "color": "2"
+    },
+    {
+      "id": "n_schema_migrator",
+      "type": "text",
+      "x": 880,
+      "y": 980,
+      "width": 340,
+      "height": 220,
+      "text": "### Schema Migrator & Recovery\n- Automated DDL version migrations\n- Checkpoint verification & transaction rollbacks\n- In-memory test store (`MemoryStateStore`) for unit suite",
+      "color": "2"
+    },
+    {
+      "id": "n_merkle_sync",
+      "type": "text",
+      "x": 1300,
+      "y": 700,
+      "width": 340,
+      "height": 230,
+      "text": "### Merkle Tree State Synchronizer\n- Hierarchical hash prefix tree across all files\n- Root hash comparison detects synchronization state in $O(1)$\n- Fast subtree traversal isolates divergent file paths in $O(\\log N)$",
+      "color": "2"
+    },
+    {
+      "id": "n_inverted_index",
+      "type": "text",
+      "x": 1300,
+      "y": 980,
+      "width": 340,
+      "height": 220,
+      "text": "### Chunk Inverted Index\n- Fast lookup: `ChunkHash -> [FileID, Offset]`\n- Cross-file deduplication in local state store\n- Prunes unreferenced chunks during background sweeps",
+      "color": "2"
+    },
+    {
+      "id": "g_observability",
+      "type": "group",
+      "x": 380,
+      "y": 1320,
+      "width": 840,
+      "height": 260,
+      "label": "Observability & Operational Metrics (ADR-0005)",
+      "color": "3"
+    },
+    {
+      "id": "n_observability_dash",
+      "type": "text",
+      "x": 420,
+      "y": 1380,
+      "width": 760,
+      "height": 160,
+      "text": "### Terminal Dashboard & Prometheus Metrics (ADR-0005)\n- Spectre.Console live interactive terminal grid (active peers, transfer rate, sync progress)\n- Prometheus metrics endpoint (`/metrics`): bytes transferred, chunk deduplication ratio, conflict counts\n- Health check endpoints and structured logging",
+      "color": "3"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_beacon_reg",
+      "fromNode": "n_beacon_engine",
+      "fromSide": "right",
+      "toNode": "n_peer_registry",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "heartbeat & beacon discovery"
+    },
+    {
+      "id": "e_static_reg",
+      "fromNode": "n_static_provider",
+      "fromSide": "right",
+      "toNode": "n_peer_registry",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "configured seed peers"
+    },
+    {
+      "id": "e_reg_coord",
+      "fromNode": "n_peer_registry",
+      "fromSide": "bottom",
+      "toNode": "n_coord_bgp",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "active peer endpoints"
+    },
+    {
+      "id": "e_coord_clock",
+      "fromNode": "n_coord_bgp",
+      "fromSide": "right",
+      "toNode": "n_vector_clock",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "sync handshake & clock exchange"
+    },
+    {
+      "id": "e_clock_relation",
+      "fromNode": "n_vector_clock",
+      "fromSide": "bottom",
+      "toNode": "n_causal_relation",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "clock vector evaluation"
+    },
+    {
+      "id": "e_rel_resolver",
+      "fromNode": "n_causal_relation",
+      "fromSide": "right",
+      "toNode": "n_conflict_resolver",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "Concurrent -> triggers conflict resolution"
+    },
+    {
+      "id": "e_res_path",
+      "fromNode": "n_conflict_resolver",
+      "fromSide": "bottom",
+      "toNode": "n_path_helper",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "PreserveSideBySide branch naming"
+    },
+    {
+      "id": "e_fastcdc_fingerprint",
+      "fromNode": "n_fastcdc_chunker",
+      "fromSide": "bottom",
+      "toNode": "n_chunk_fingerprint",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "raw chunks to hashed descriptors"
+    },
+    {
+      "id": "e_coord_stream",
+      "fromNode": "n_coord_bgp",
+      "fromSide": "bottom",
+      "toNode": "n_streaming_reader",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "transport channel for chunks"
+    },
+    {
+      "id": "e_stream_reconstruct",
+      "fromNode": "n_streaming_reader",
+      "fromSide": "bottom",
+      "toNode": "n_delta_reconstructor",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "stream missing chunks"
+    },
+    {
+      "id": "e_reconstruct_store",
+      "fromNode": "n_delta_reconstructor",
+      "fromSide": "right",
+      "toNode": "n_sqlite_store",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "commit assembled file & hashes"
+    },
+    {
+      "id": "e_store_merkle",
+      "fromNode": "n_sqlite_store",
+      "fromSide": "right",
+      "toNode": "n_merkle_sync",
+      "toSide": "left",
+      "toEnd": "arrow",
+      "label": "tree prefix hash updates"
+    },
+    {
+      "id": "e_store_index",
+      "fromNode": "n_sqlite_store",
+      "fromSide": "bottom",
+      "toNode": "n_inverted_index",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "maintain chunk ref-counts"
+    },
+    {
+      "id": "e_merkle_clock",
+      "fromNode": "n_merkle_sync",
+      "fromSide": "top",
+      "toNode": "n_causal_relation",
+      "toSide": "bottom",
+      "toEnd": "arrow",
+      "label": "reconcile divergent tree branches"
+    },
+    {
+      "id": "e_store_obs",
+      "fromNode": "n_sqlite_store",
+      "fromSide": "bottom",
+      "toNode": "n_observability_dash",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "sync telemetry & chunk metrics"
+    },
+    {
+      "id": "e_coord_obs",
+      "fromNode": "n_coord_bgp",
+      "fromSide": "bottom",
+      "toNode": "n_observability_dash",
+      "toSide": "top",
+      "toEnd": "arrow",
+      "label": "connection & bandwidth stats"
+    }
+  ]
+}
