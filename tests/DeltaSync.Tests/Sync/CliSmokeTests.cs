@@ -74,6 +74,8 @@ public class CliSmokeTests
         using var writer = new StringWriter();
         var console = AnsiConsole.Create(new AnsiConsoleSettings
         {
+            Ansi = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
             Out = new AnsiConsoleOutput(writer)
         });
         console.Write(layout);

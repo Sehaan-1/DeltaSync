@@ -122,7 +122,7 @@ public sealed class TerminalDashboard
         statusGrid.AddColumn();
         statusGrid.AddRow(new Markup("[dim]Sync Path:[/]"), new Markup($"[white]{Markup.Escape(_syncPath)}[/]"));
         statusGrid.AddRow(new Markup("[dim]State:[/]"), new Markup(stateMarkup));
-        statusGrid.AddRow(new Markup("[dim]Connected Peers:[/]"), new Markup($"[bold green]{_activePeersCount}[/] active"));
+        statusGrid.AddRow(new Markup("[dim]Connected Peers:[/]"), new Markup($"[bold green]{_activePeersCount} active[/]"));
         statusGrid.AddRow(new Markup("[dim]Prometheus Endpoint:[/]"), new Markup($"[link=http://127.0.0.1:{_metricsPort}/metrics]http://127.0.0.1:{_metricsPort}/metrics[/]"));
 
         var statusPanel = new Panel(statusGrid)

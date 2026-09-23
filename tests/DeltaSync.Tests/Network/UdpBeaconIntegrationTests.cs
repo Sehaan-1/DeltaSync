@@ -205,7 +205,11 @@ public class UdpBeaconIntegrationTests
         byte[] garbage = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         await client.SendAsync(garbage, garbage.Length, new IPEndPoint(IPAddress.Loopback, port));
 
-        await Task.Delay(150);
+        var sw = Stopwatch.StartNew();
+        while (listener.PacketsReceived == 0 && sw.ElapsedMilliseconds < 2000)
+        {
+            await Task.Delay(25);
+        }
 
         listener.PacketsReceived.Should().BeGreaterOrEqualTo(1);
         listener.DroppedPackets.Should().BeGreaterOrEqualTo(1, "Malformed datagrams must be accounted in DroppedPackets");
