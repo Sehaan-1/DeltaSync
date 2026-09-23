@@ -46,6 +46,11 @@ public interface ISyncOrchestrator : IAsyncDisposable, IDisposable
     Task SynchronizeAllAsync(CancellationToken ct = default);
 
     /// <summary>
+    /// Attaches an active peer transport channel to the orchestrator for wire message routing and anti-entropy tracking.
+    /// </summary>
+    IAsyncDisposable AttachChannel(IPeerTransportChannel channel);
+
+    /// <summary>
     /// Scans the temporary staging directory for abandoned/orphaned .tmp files from previous crashed sessions
     /// and deletes them. Returns the number of files cleaned up.
     /// </summary>
