@@ -266,7 +266,13 @@ public sealed class MemoryStateStore : ISqliteStateStore
         }
     }
 
-    public Task<ChunkLocation?> GetChunkLocationAsync(string chunkHash, CancellationToken cancellationToken = default)
+    public async Task<ChunkLocation?> GetChunkLocationAsync(string chunkHash, CancellationToken cancellationToken = default)
+    {
+        var locations = await GetChunkLocationsAsync(chunkHash, cancellationToken).ConfigureAwait(false);
+        return locations.Count > 0 ? locations[0] : null;
+    }
+
+    public Task<IReadOnlyList<ChunkLocation>> GetChunkLocationsAsync(string chunkHash, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
@@ -277,6 +283,7 @@ public sealed class MemoryStateStore : ISqliteStateStore
             throw new ArgumentException("Chunk hash must be a 64-character hexadecimal SHA-256 string.", nameof(chunkHash));
         }
 
+        var list = new List<ChunkLocation>();
         _lock.EnterReadLock();
         try
         {
@@ -289,12 +296,12 @@ public sealed class MemoryStateStore : ISqliteStateStore
                 {
                     if (string.Equals(chunk.HashHex, normalizedHash, StringComparison.OrdinalIgnoreCase))
                     {
-                        return Task.FromResult<ChunkLocation?>(new ChunkLocation(file.Metadata.RelativePath, chunk.Offset, chunk.Length));
+                        list.Add(new ChunkLocation(file.Metadata.RelativePath, chunk.Offset, chunk.Length));
                     }
                 }
             }
 
-            return Task.FromResult<ChunkLocation?>(null);
+            return Task.FromResult<IReadOnlyList<ChunkLocation>>(list);
         }
         finally
         {

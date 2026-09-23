@@ -413,6 +413,12 @@ public sealed class SqliteStateStore : ISqliteStateStore
 
     public async Task<ChunkLocation?> GetChunkLocationAsync(string chunkHash, CancellationToken cancellationToken = default)
     {
+        var locations = await GetChunkLocationsAsync(chunkHash, cancellationToken).ConfigureAwait(false);
+        return locations.Count > 0 ? locations[0] : null;
+    }
+
+    public async Task<IReadOnlyList<ChunkLocation>> GetChunkLocationsAsync(string chunkHash, CancellationToken cancellationToken = default)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(chunkHash);
 
@@ -428,20 +434,20 @@ public sealed class SqliteStateStore : ISqliteStateStore
             SELECT f.relative_path, fc.offset, fc.length
             FROM file_chunks fc
             INNER JOIN files f ON fc.file_id = f.file_id
-            WHERE fc.chunk_hash = $hash AND f.is_deleted = 0
-            LIMIT 1;";
+            WHERE fc.chunk_hash = $hash AND f.is_deleted = 0;";
         cmd.Parameters.AddWithValue("$hash", normalizedHash);
 
+        var list = new List<ChunkLocation>();
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             string relativePath = reader.GetString(0);
             long offset = reader.GetInt64(1);
             int length = reader.GetInt32(2);
-            return new ChunkLocation(relativePath, offset, length);
+            list.Add(new ChunkLocation(relativePath, offset, length));
         }
 
-        return null;
+        return list;
     }
 
     public async Task<MerkleNode?> GetMerkleNodeAsync(string prefix, CancellationToken cancellationToken = default)

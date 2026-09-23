@@ -553,11 +553,23 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
     {
         _metricsSink.RecordConflictDetected();
 
-        string siblingRelPath = resolution.SiblingPath ??
-            ConflictedPathHelper.GenerateConflictedPath(
-                normalizedPath,
-                channel.RemotePeerId,
-                p => File.Exists(Path.Combine(_syncRootDirectory, p)));
+        // Deterministic tie-breaking (ADR-0001 / RFC 4271):
+        // Lexically lower PeerId retains the primary file path;
+        // lexically higher PeerId moves/receives the conflict sibling file path.
+        // This guarantees both nodes converge to identical files and identical Merkle roots without duplicate conflicts.
+        bool localWinsPrimary = string.CompareOrdinal(_localPeerId, channel.RemotePeerId) < 0;
+        string peerIdForSibling = localWinsPrimary ? channel.RemotePeerId : _localPeerId;
+        string primaryWinningPeerId = localWinsPrimary ? _localPeerId : channel.RemotePeerId;
+
+        VectorClock primaryClock = (localMeta?.Clock ?? VectorClock.Empty)
+            .Merge(remoteManifest.Clock ?? VectorClock.Empty)
+            .Tick(primaryWinningPeerId);
+
+        string siblingRelPath = ConflictedPathHelper.GenerateConflictedPath(
+            normalizedPath,
+            peerIdForSibling,
+            p => File.Exists(Path.Combine(_syncRootDirectory, p)) &&
+                 !string.Equals(p, normalizedPath, StringComparison.OrdinalIgnoreCase));
 
         string siblingFullPath = Path.GetFullPath(Path.Combine(_syncRootDirectory, siblingRelPath));
         if (!siblingFullPath.StartsWith(_canonicalRoot, StringComparison.OrdinalIgnoreCase))
@@ -565,46 +577,108 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
             throw new InvalidOperationException($"Security boundary violation: sibling '{siblingRelPath}' resolves outside sync root.");
         }
 
-        // 1. Retain local file at primary path and advance its vector clock to supremum unified vector
-        if (localMeta != null)
+        string primaryFullPath = Path.GetFullPath(Path.Combine(_syncRootDirectory, normalizedPath));
+
+        if (localWinsPrimary)
         {
-            var existingChunks = await _stateStore.GetFileChunksAsync(normalizedPath, ct).ConfigureAwait(false);
-            var updatedPrimary = localMeta with
+            // Branch 1: Local node retains primary path.
+            // 1. Update primary file clock to supremum unified clock in SQLite.
+            if (localMeta != null)
             {
-                Clock = resolution.PrimaryVector,
-                Version = localMeta.Version + 1
-            };
-            await _stateStore.UpsertFileAsync(updatedPrimary, existingChunks, ct).ConfigureAwait(false);
+                var existingChunks = await _stateStore.GetFileChunksAsync(normalizedPath, ct).ConfigureAwait(false);
+                var updatedPrimary = localMeta with
+                {
+                    Clock = primaryClock,
+                    Version = localMeta.Version + 1
+                };
+                await _stateStore.UpsertFileAsync(updatedPrimary, existingChunks, ct).ConfigureAwait(false);
+            }
+
+            // 2. Fetch remote payload into sibling path.
+            _watcherService?.SuppressPath(siblingRelPath);
+            try
+            {
+                var siblingManifest = remoteManifest with { RelativePath = siblingRelPath };
+                await _wireProtocol.FetchAndReconstructFileAsync(
+                    channel,
+                    siblingManifest,
+                    siblingFullPath,
+                    _stagingDirectory,
+                    ct).ConfigureAwait(false);
+
+                var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
+                var siblingMetadata = new FileMetadata(
+                    relativePath: siblingRelPath,
+                    sizeBytes: remoteManifest.TotalBytes,
+                    rootHash: remoteManifest.ContentHash,
+                    modifiedUtc: DateTimeOffset.UtcNow,
+                    clock: resolution.SiblingVector ?? remoteManifest.Clock,
+                    isDeleted: false,
+                    version: 1);
+
+                await _stateStore.UpsertFileAsync(siblingMetadata, chunkDescriptors, ct).ConfigureAwait(false);
+                return true;
+            }
+            finally
+            {
+                _watcherService?.UnsuppressPath(siblingRelPath);
+            }
         }
-
-        // 2. Fetch remote payload into the sibling path (ADR-0001 side-by-side branch)
-        _watcherService?.SuppressPath(siblingRelPath);
-        try
+        else
         {
-            var siblingManifest = remoteManifest with { RelativePath = siblingRelPath };
-            await _wireProtocol.FetchAndReconstructFileAsync(
-                channel,
-                siblingManifest,
-                siblingFullPath,
-                _stagingDirectory,
-                ct).ConfigureAwait(false);
+            // Branch 2: Remote node retains primary path.
+            // 1. Copy local file to sibling path with local clock (non-destructive so primaryFullPath remains readable to serve chunk requests).
+            _watcherService?.SuppressPath(siblingRelPath);
+            _watcherService?.SuppressPath(normalizedPath);
+            try
+            {
+                if (File.Exists(primaryFullPath))
+                {
+                    string? siblingDir = Path.GetDirectoryName(siblingFullPath);
+                    if (!string.IsNullOrEmpty(siblingDir)) Directory.CreateDirectory(siblingDir);
+                    File.Copy(primaryFullPath, siblingFullPath, overwrite: true);
+                }
 
-            var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
-            var siblingMetadata = new FileMetadata(
-                relativePath: siblingRelPath,
-                sizeBytes: remoteManifest.TotalBytes,
-                rootHash: remoteManifest.ContentHash,
-                modifiedUtc: DateTimeOffset.UtcNow,
-                clock: resolution.SiblingVector ?? remoteManifest.Clock,
-                isDeleted: false,
-                version: 1);
+                if (localMeta != null)
+                {
+                    var localChunks = await _stateStore.GetFileChunksAsync(normalizedPath, ct).ConfigureAwait(false);
+                    var siblingMetadata = new FileMetadata(
+                        relativePath: siblingRelPath,
+                        sizeBytes: localMeta.SizeBytes,
+                        rootHash: localMeta.RootHash,
+                        modifiedUtc: localMeta.ModifiedUtc,
+                        clock: localMeta.Clock ?? VectorClock.Empty,
+                        isDeleted: false,
+                        version: 1);
+                    await _stateStore.UpsertFileAsync(siblingMetadata, localChunks, ct).ConfigureAwait(false);
+                }
 
-            await _stateStore.UpsertFileAsync(siblingMetadata, chunkDescriptors, ct).ConfigureAwait(false);
-            return true;
-        }
-        finally
-        {
-            _watcherService?.UnsuppressPath(siblingRelPath);
+                // 2. Fetch remote payload into primary path with unified clock.
+                await _wireProtocol.FetchAndReconstructFileAsync(
+                    channel,
+                    remoteManifest,
+                    primaryFullPath,
+                    _stagingDirectory,
+                    ct).ConfigureAwait(false);
+
+                var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
+                var primaryMetadata = new FileMetadata(
+                    relativePath: normalizedPath,
+                    sizeBytes: remoteManifest.TotalBytes,
+                    rootHash: remoteManifest.ContentHash,
+                    modifiedUtc: DateTimeOffset.UtcNow,
+                    clock: primaryClock,
+                    isDeleted: false,
+                    version: (localMeta?.Version ?? 0) + 1);
+
+                await _stateStore.UpsertFileAsync(primaryMetadata, chunkDescriptors, ct).ConfigureAwait(false);
+                return true;
+            }
+            finally
+            {
+                _watcherService?.UnsuppressPath(siblingRelPath);
+                _watcherService?.UnsuppressPath(normalizedPath);
+            }
         }
     }
 

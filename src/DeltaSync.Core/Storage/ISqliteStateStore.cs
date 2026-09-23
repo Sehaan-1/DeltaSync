@@ -46,6 +46,11 @@ public interface ISqliteStateStore : IAsyncDisposable, IDisposable
     Task<ChunkLocation?> GetChunkLocationAsync(string chunkHash, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Resolves all physical file byte range candidate locations for a given chunk hash from active files.
+    /// </summary>
+    Task<IReadOnlyList<ChunkLocation>> GetChunkLocationsAsync(string chunkHash, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Retrieves the Merkle node digest and child count for a given directory prefix.
     /// Root directory is represented as an empty string ("").
     /// </summary>
