@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using DeltaSync.Core.Models;
 using DeltaSync.Core.Storage;
 using DeltaSync.Core.Sync;
 using FluentAssertions;
@@ -130,11 +131,16 @@ public sealed class FileWatcherServiceTests : IDisposable
         watcher.IsPathSuppressed(suppressedRel).Should().BeFalse();
 
         await File.WriteAllTextAsync(filePath, "now it should ingest");
-        await Task.Delay(100);
-        await watcher.FlushAsync();
+        FileMetadata? meta2 = null;
+        for (int i = 0; i < 20; i++)
+        {
+            await Task.Delay(50);
+            await watcher.FlushAsync();
+            meta2 = await store.GetFileAsync(suppressedRel);
+            if (meta2 != null) break;
+        }
 
         // Assert 2: Store now has record
-        var meta2 = await store.GetFileAsync(suppressedRel);
         meta2.Should().NotBeNull();
         meta2!.SizeBytes.Should().BeGreaterThan(0);
     }
@@ -160,14 +166,19 @@ public sealed class FileWatcherServiceTests : IDisposable
 
         // Act
         File.Move(oldPath, newPath);
-        await Task.Delay(150);
-        await watcher.FlushAsync();
+        FileMetadata? newMetaAfter = null;
+        for (int i = 0; i < 20; i++)
+        {
+            await Task.Delay(50);
+            await watcher.FlushAsync();
+            newMetaAfter = await store.GetFileAsync("destination.txt");
+            if (newMetaAfter != null && !newMetaAfter.IsDeleted) break;
+        }
 
         // Assert
         var oldMetaAfter = await store.GetFileAsync("origin.txt");
         oldMetaAfter!.IsDeleted.Should().BeTrue();
 
-        var newMetaAfter = await store.GetFileAsync("destination.txt");
         newMetaAfter.Should().NotBeNull();
         newMetaAfter!.IsDeleted.Should().BeFalse();
         newMetaAfter.RootHash.Should().Be(originMeta.RootHash);
