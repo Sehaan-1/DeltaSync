@@ -52,20 +52,33 @@ public sealed class SqliteLocalChunkProvider : ILocalChunkProvider, IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(hashHex);
 
-        var location = await _stateStore.GetChunkLocationAsync(hashHex, cancellationToken).ConfigureAwait(false);
-        if (location == null)
+        var locations = await _stateStore.GetChunkLocationsAsync(hashHex, cancellationToken).ConfigureAwait(false);
+        if (locations.Count == 0)
         {
             return null;
         }
 
-        string fullPath = Path.Combine(_rootDirectory, location.RelativePath.Replace('/', Path.DirectorySeparatorChar));
-        if (!File.Exists(fullPath))
+        ChunkLocation? location = null;
+        string? resolvedFullPath = null;
+
+        foreach (var loc in locations)
+        {
+            string candidatePath = Path.Combine(_rootDirectory, loc.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(candidatePath))
+            {
+                location = loc;
+                resolvedFullPath = candidatePath;
+                break;
+            }
+        }
+
+        if (location == null || resolvedFullPath == null)
         {
             return null;
         }
 
         byte[] buffer = new byte[location.Length];
-        using (var fileHandle = File.OpenHandle(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (var fileHandle = File.OpenHandle(resolvedFullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
         {
             int bytesRead = RandomAccess.Read(fileHandle, buffer, location.Offset);
             if (bytesRead != location.Length)

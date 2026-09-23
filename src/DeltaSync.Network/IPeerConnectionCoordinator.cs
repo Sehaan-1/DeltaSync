@@ -6,7 +6,7 @@ using System.Net;
 /// Coordinates peer transport connections, introductory handshakes, and BGP-style collision tie-breaking (Spec §3 Step 5).
 /// Enforces exact single connection convergence (P1), cluster isolation (P2), and zero socket duplication (I1).
 /// </summary>
-public interface IPeerConnectionCoordinator : IAsyncDisposable, IDisposable
+public interface IPeerConnectionCoordinator : IPeerChannelProvider, IAsyncDisposable, IDisposable
 {
     /// <summary>
     /// Local synchronization cluster UUID.
@@ -29,29 +29,9 @@ public interface IPeerConnectionCoordinator : IAsyncDisposable, IDisposable
     PeerRegistry Registry { get; }
 
     /// <summary>
-    /// Collection of currently active transport channels.
-    /// </summary>
-    IReadOnlyCollection<IPeerTransportChannel> ActiveConnections { get; }
-
-    /// <summary>
-    /// Event raised when a canonical duplex connection is successfully established.
-    /// </summary>
-    event EventHandler<IPeerTransportChannel>? ConnectionEstablished;
-
-    /// <summary>
-    /// Event raised when an active peer connection is terminated or closed.
-    /// </summary>
-    event EventHandler<string>? ConnectionClosed;
-
-    /// <summary>
     /// Event raised when a cross-dial collision is detected and resolved under RFC 4271 §6.8 tie-break.
     /// </summary>
     event EventHandler<(string RemotePeerId, CollisionDecision Decision)>? CollisionResolved;
-
-    /// <summary>
-    /// Attempts to retrieve an active transport channel by canonical peer ID.
-    /// </summary>
-    bool TryGetConnection(string peerId, out IPeerTransportChannel? channel);
 
     /// <summary>
     /// Initiates an outbound transport dial to a remote peer with handshake negotiation.

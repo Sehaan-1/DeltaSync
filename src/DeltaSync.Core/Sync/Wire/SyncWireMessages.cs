@@ -98,7 +98,8 @@ public sealed record FileManifestResponse(
     string ContentHash,
     long TotalBytes,
     VectorClock Clock,
-    IReadOnlyList<WireChunkRecord> Chunks)
+    IReadOnlyList<WireChunkRecord> Chunks,
+    bool IsDeleted = false)
 {
     public FileManifest ToFileManifest()
     {

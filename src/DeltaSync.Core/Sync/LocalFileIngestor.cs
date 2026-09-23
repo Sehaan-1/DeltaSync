@@ -160,6 +160,12 @@ public sealed class LocalFileIngestor
 
         if (existing != null)
         {
+            // If file exists and content hash has not changed, do not advance clock or write redundant DB updates (F4 idempotency)
+            if (!existing.IsDeleted && string.Equals(existing.RootHash, manifest.RootHash, StringComparison.OrdinalIgnoreCase))
+            {
+                return existing;
+            }
+
             // Monotonic causal progress on local modification
             clock = existing.Clock.Tick(_localPeerId);
             version = existing.Version + 1;

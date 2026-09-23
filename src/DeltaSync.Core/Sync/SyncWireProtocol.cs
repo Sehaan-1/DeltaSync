@@ -124,10 +124,12 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
             }
 
             // Inspect direct child files
+            var remotePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (resp.Files != null)
             {
                 foreach (var remoteFile in resp.Files)
                 {
+                    remotePaths.Add(remoteFile.RelativePath);
                     var localFile = await _stateStore.GetFileAsync(remoteFile.RelativePath, ct).ConfigureAwait(false);
                     if (localFile == null ||
                         localFile.IsDeleted != remoteFile.IsDeleted ||
@@ -141,6 +143,22 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
                             remoteFile.Clock,
                             remoteFile.IsDeleted));
                     }
+                }
+            }
+
+            // Inspect local files to identify active files that remote is missing or has deleted
+            var localDiff = await _stateStore.GetDirectoryDifferenceAsync(curPrefix, "", ct).ConfigureAwait(false);
+            foreach (var localFile in localDiff.Files)
+            {
+                if (!remotePaths.Contains(localFile.RelativePath) && !localFile.IsDeleted)
+                {
+                    divergentFiles.Add(new DivergentFileSummary(
+                        localFile.RelativePath,
+                        null,
+                        localFile.RootHash,
+                        0,
+                        null,
+                        RemoteIsDeleted: true));
                 }
             }
         }
@@ -358,14 +376,19 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
                     var fileMeta = await _stateStore.GetFileAsync(query.RelativePath, ct).ConfigureAwait(false);
                     if (fileMeta == null)
                     {
-                        var emptyResp = new FileManifestResponse(query.RelativePath, "", 0, VectorClock.Empty, Array.Empty<WireChunkRecord>());
+                        var emptyResp = new FileManifestResponse(query.RelativePath, "", 0, VectorClock.Empty, Array.Empty<WireChunkRecord>(), IsDeleted: false);
                         await SendResponseAsync(session, SyncMessageType.FileManifestResponse, frame.CorrelationId, emptyResp, ct).ConfigureAwait(false);
+                    }
+                    else if (fileMeta.IsDeleted)
+                    {
+                        var tombstoneResp = new FileManifestResponse(fileMeta.RelativePath, "", 0, fileMeta.Clock ?? VectorClock.Empty, Array.Empty<WireChunkRecord>(), IsDeleted: true);
+                        await SendResponseAsync(session, SyncMessageType.FileManifestResponse, frame.CorrelationId, tombstoneResp, ct).ConfigureAwait(false);
                     }
                     else
                     {
                         var chunks = await _stateStore.GetFileChunksAsync(query.RelativePath, ct).ConfigureAwait(false);
                         var wireChunks = chunks.Select(WireChunkRecord.FromDescriptor).ToList();
-                        var manifestResp = new FileManifestResponse(fileMeta.RelativePath, fileMeta.RootHash, fileMeta.SizeBytes, fileMeta.Clock, wireChunks);
+                        var manifestResp = new FileManifestResponse(fileMeta.RelativePath, fileMeta.RootHash, fileMeta.SizeBytes, fileMeta.Clock, wireChunks, IsDeleted: false);
                         await SendResponseAsync(session, SyncMessageType.FileManifestResponse, frame.CorrelationId, manifestResp, ct).ConfigureAwait(false);
                     }
                     break;
