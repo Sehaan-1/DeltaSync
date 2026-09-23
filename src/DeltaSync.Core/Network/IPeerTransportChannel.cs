@@ -5,6 +5,7 @@ using System.Net;
 /// <summary>
 /// Represents an established bidirectional transport channel between two DeltaSync peers (Spec §3 Step 5).
 /// Can be backed by an in-memory duplex channel, a TCP socket stream, or a gRPC duplex stream.
+/// Owned by DeltaSync.Core as an external port (docs/architecture/deltasync.md § Ports the Core Owns).
 /// </summary>
 public interface IPeerTransportChannel : IAsyncDisposable, IDisposable
 {
