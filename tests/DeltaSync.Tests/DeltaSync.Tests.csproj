@@ -27,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\DeltaSync.Core\DeltaSync.Core.csproj" />
     <ProjectReference Include="..\..\src\DeltaSync.Network\DeltaSync.Network.csproj" />
+    <ProjectReference Include="..\..\src\DeltaSync.Cli\DeltaSync.Cli.csproj" />
   </ItemGroup>
 
 </Project>
