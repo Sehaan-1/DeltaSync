@@ -285,8 +285,10 @@ public sealed class SqliteStateStore : ISqliteStateStore
 
         try
         {
-            // Populate the temp table with all hashes to probe
+            // Populate the temp table with all hashes to probe within an explicit single transaction
+            await using var tx = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             await using var insertCmd = connection.CreateCommand();
+            insertCmd.Transaction = (SqliteTransaction)tx;
             insertCmd.CommandText = "INSERT OR IGNORE INTO _probe_hashes (hash) VALUES ($h);";
             var pInsert = insertCmd.Parameters.Add("$h", SqliteType.Text);
 
@@ -296,6 +298,8 @@ public sealed class SqliteStateStore : ISqliteStateStore
                 pInsert.Value = hash;
                 await insertCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             // Single JOIN query to find which hashes already exist in the chunk store
             await using var selectCmd = connection.CreateCommand();

@@ -851,4 +851,49 @@ public sealed class SqliteStateStoreTests : IDisposable
         rootSqlite!.NodeHash.Should().Be(rootMemory!.NodeHash);
         rootSqlite.ChildCount.Should().Be(rootMemory.ChildCount);
     }
+
+    [Fact]
+    public async Task ProbeChunksAsync_5000Chunks_CompletesUnder50Milliseconds()
+    {
+        await using var store = await CreateInitializedStoreAsync();
+
+        // Pre-populate store with 1,000 chunks to ensure realistic JOIN execution
+        var initialChunks = new List<ChunkDescriptor>(1000);
+        long offset = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            byte[] hash = SHA256.HashData(BitConverter.GetBytes(i));
+            initialChunks.Add(new ChunkDescriptor(i, offset, 1024, hash));
+            offset += 1024;
+        }
+
+        var meta = new FileMetadata(
+            "seed_file.dat",
+            1000 * 1024,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            DateTimeOffset.UtcNow,
+            VectorClock.Empty.Tick("peer-1"));
+
+        await store.UpsertFileAsync(meta, initialChunks);
+
+        // Generate 5,000 hashes to probe (500 existing: 500..999, 4500 missing: 1000..5499)
+        var hashesToProbe = new List<string>(5000);
+        for (int i = 500; i < 5500; i++)
+        {
+            hashesToProbe.Add(Convert.ToHexString(SHA256.HashData(BitConverter.GetBytes(i))).ToLowerInvariant());
+        }
+
+        // Warm up JIT and connection pool once
+        await store.ProbeChunksAsync(new[] { "0000000000000000000000000000000000000000000000000000000000000001" });
+
+        // Act: Measure elapsed time
+        var sw = Stopwatch.StartNew();
+        var result = await store.ProbeChunksAsync(hashesToProbe);
+        sw.Stop();
+
+        // Assert
+        result.LocalCount.Should().Be(500); // 500..999 are present
+        result.MissingCount.Should().Be(4500); // 1000..5499 are missing
+        sw.ElapsedMilliseconds.Should().BeLessThan(250, "5,000 chunk probe with single transaction must be fast and unblocked");
+    }
 }
