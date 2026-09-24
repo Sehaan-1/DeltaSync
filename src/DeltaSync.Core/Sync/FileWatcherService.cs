@@ -472,19 +472,23 @@ public sealed class FileWatcherService : IFileWatcherService
         }
     }
 
-    private bool TryResolveRelativePath(string fullPath, out string? relativePath)
+    public bool TryResolveRelativePath(string fullPath, out string? relativePath, StringComparison? comparisonOverride = null)
     {
         relativePath = null;
         try
         {
             string canonical = Path.GetFullPath(fullPath);
-            if (!canonical.StartsWith(_canonicalRoot, StringComparison.OrdinalIgnoreCase) &&
-                !canonical.Equals(_rootDirectory, StringComparison.OrdinalIgnoreCase))
+            var comparison = comparisonOverride ?? (OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
+
+            if (!canonical.StartsWith(_canonicalRoot, comparison) &&
+                !canonical.Equals(_rootDirectory, comparison))
             {
                 return false;
             }
 
-            relativePath = Path.GetRelativePath(_rootDirectory, canonical);
+            relativePath = FileManifest.NormalizePath(Path.GetRelativePath(_rootDirectory, canonical));
             return true;
         }
         catch

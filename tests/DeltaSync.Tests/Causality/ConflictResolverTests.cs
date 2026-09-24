@@ -388,5 +388,65 @@ public class ConflictResolverTests
         }
     }
 
+    [Fact]
+    public void ApplyToDirectory_PathTraversal_ThrowsSecurityBoundaryViolation()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"traversal_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var resolution = new ConflictResolutionResult(
+                Type: ConflictResolutionType.ApplyRemote,
+                CausalRelation: CausalRelation.Before,
+                PrimaryPath: "../../escape.txt",
+                PrimaryVector: VectorClock.Empty,
+                SiblingPath: null,
+                SiblingVector: null,
+                LocalHash: null,
+                RemoteHash: null);
+
+            var act = () => ConflictResolver.ApplyToDirectory(resolution, tempDir, new byte[] { 1, 2, 3 });
+            act.Should().Throw<InvalidOperationException>()
+               .WithMessage("*Security boundary violation*");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public void ApplyToDirectory_AtomicWrite_WritesPayloadWithoutLeavingTmpFiles()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"atomic_write_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var resolution = new ConflictResolutionResult(
+                Type: ConflictResolutionType.ApplyRemote,
+                CausalRelation: CausalRelation.Before,
+                PrimaryPath: "nested/file.txt",
+                PrimaryVector: VectorClock.Empty,
+                SiblingPath: null,
+                SiblingVector: null,
+                LocalHash: null,
+                RemoteHash: null);
+
+            byte[] content = new byte[] { 42, 43, 44 };
+            ConflictResolver.ApplyToDirectory(resolution, tempDir, content);
+
+            string targetPath = Path.Combine(tempDir, "nested", "file.txt");
+            File.Exists(targetPath).Should().BeTrue();
+            File.ReadAllBytes(targetPath).Should().Equal(content);
+
+            var tmpFiles = Directory.EnumerateFiles(tempDir, "*.tmp", SearchOption.AllDirectories);
+            tmpFiles.Should().BeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
     #endregion
 }

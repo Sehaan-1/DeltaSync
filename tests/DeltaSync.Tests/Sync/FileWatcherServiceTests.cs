@@ -283,4 +283,43 @@ public sealed class FileWatcherServiceTests : IDisposable
         updatedMerkleRoot.Should().NotBeNull();
         updatedMerkleRoot!.NodeHash.Should().NotBe(initialRootHash, "Merkle root must update when child files are tombstoned");
     }
+
+    [Fact]
+    public async Task TryResolveRelativePath_LinuxCaseSensitivity_HonorsPlatformComparison()
+    {
+        await using var store = await CreateStoreAsync();
+        await using var watcher = new FileWatcherService(_tempSyncDir, store, LocalPeerId);
+
+        string normalPath = Path.Combine(_tempSyncDir, "SubDir", "file.txt");
+
+        // Invert casing of alphabetic characters in root directory
+        string invertedRoot = string.Concat(_tempSyncDir.Select(c => char.IsLetter(c) ? (char.IsUpper(c) ? char.ToLowerInvariant(c) : char.ToUpperInvariant(c)) : c));
+        string alteredCasePath = Path.Combine(invertedRoot, "SubDir", "file.txt");
+
+        if (invertedRoot != _tempSyncDir)
+        {
+            // Case-insensitive (Windows default) resolves successfully
+            bool windowsMatch = watcher.TryResolveRelativePath(alteredCasePath, out string? relWindows, StringComparison.OrdinalIgnoreCase);
+            windowsMatch.Should().BeTrue();
+            relWindows.Should().NotBeNull();
+
+            // Case-sensitive (Linux default) rejects mismatched case
+            bool linuxMatch = watcher.TryResolveRelativePath(alteredCasePath, out string? relLinux, StringComparison.Ordinal);
+            linuxMatch.Should().BeFalse();
+            relLinux.Should().BeNull();
+        }
+
+        // Exact match passes on both
+        bool exactWindows = watcher.TryResolveRelativePath(normalPath, out string? exactRelWin, StringComparison.OrdinalIgnoreCase);
+        exactWindows.Should().BeTrue();
+        exactRelWin.Should().Be("SubDir/file.txt");
+
+        bool exactLinux = watcher.TryResolveRelativePath(normalPath, out string? exactRelLin, StringComparison.Ordinal);
+        exactLinux.Should().BeTrue();
+        exactRelLin.Should().Be("SubDir/file.txt");
+
+        // Traversal / outside path rejects
+        string outsidePath = Path.Combine(Path.GetTempPath(), "DeltaSyncOutside_" + Guid.NewGuid().ToString("N"), "file.txt");
+        watcher.TryResolveRelativePath(outsidePath, out _).Should().BeFalse();
+    }
 }

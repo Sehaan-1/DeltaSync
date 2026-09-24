@@ -75,31 +75,36 @@ public static class ConflictResolver
         ArgumentNullException.ThrowIfNull(resolution);
         ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
 
+        string canonicalBase = Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
         switch (resolution.Type)
         {
             case ConflictResolutionType.ApplyRemote:
                 if (remoteContent != null)
                 {
-                    string fullPath = Path.Combine(baseDirectory, resolution.PrimaryPath);
-                    string? dir = Path.GetDirectoryName(fullPath);
-                    if (!string.IsNullOrEmpty(dir))
+                    string fullPath = Path.GetFullPath(Path.Combine(baseDirectory, resolution.PrimaryPath));
+                    if (!fullPath.StartsWith(canonicalBase, comparison))
                     {
-                        Directory.CreateDirectory(dir);
+                        throw new InvalidOperationException($"Security boundary violation: '{resolution.PrimaryPath}' escapes base directory.");
                     }
-                    File.WriteAllBytes(fullPath, remoteContent);
+
+                    AtomicWriteFile(fullPath, remoteContent);
                 }
                 break;
 
             case ConflictResolutionType.PreserveSideBySide:
                 if (!string.IsNullOrEmpty(resolution.SiblingPath) && remoteContent != null)
                 {
-                    string siblingFullPath = Path.Combine(baseDirectory, resolution.SiblingPath);
-                    string? dir = Path.GetDirectoryName(siblingFullPath);
-                    if (!string.IsNullOrEmpty(dir))
+                    string siblingFullPath = Path.GetFullPath(Path.Combine(baseDirectory, resolution.SiblingPath));
+                    if (!siblingFullPath.StartsWith(canonicalBase, comparison))
                     {
-                        Directory.CreateDirectory(dir);
+                        throw new InvalidOperationException($"Security boundary violation: sibling '{resolution.SiblingPath}' escapes base directory.");
                     }
-                    File.WriteAllBytes(siblingFullPath, remoteContent);
+
+                    AtomicWriteFile(siblingFullPath, remoteContent);
                 }
                 break;
 
@@ -108,6 +113,29 @@ public static class ConflictResolver
             case ConflictResolutionType.MergeIdentical:
             default:
                 break;
+        }
+    }
+
+    private static void AtomicWriteFile(string targetFullPath, byte[] content)
+    {
+        string? dir = Path.GetDirectoryName(targetFullPath);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        string tempFile = targetFullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllBytes(tempFile, content);
+            File.Move(tempFile, targetFullPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                try { File.Delete(tempFile); } catch { }
+            }
         }
     }
 
