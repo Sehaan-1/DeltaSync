@@ -321,9 +321,12 @@ public sealed class PeerRegistry
         {
             if (_peersById.TryGetValue(peerId, out var existing))
             {
+                if (existing.State != PeerState.Dead)
+                {
+                    Interlocked.Decrement(ref _activeCount); // peer is no longer active
+                }
                 existing.State = PeerState.Dead;
                 snapshot = existing.Snapshot();
-                Interlocked.Decrement(ref _activeCount); // peer is no longer active
 
                 if (evict)
                 {

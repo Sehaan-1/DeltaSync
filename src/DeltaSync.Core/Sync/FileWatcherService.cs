@@ -463,7 +463,7 @@ public sealed class FileWatcherService : IFileWatcherService
     private void HandleWatcherError(Exception? ex)
     {
         // On buffer overflow or IO errors, reset watcher state
-        if (ex != null && _isWatching && !_disposed)
+        if (ex != null && _isWatching && Volatile.Read(ref _disposeState) == 0)
         {
             try
             {

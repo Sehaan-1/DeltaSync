@@ -191,7 +191,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         var attachment = _wireProtocol.AttachChannel(channel);
         var entry = new ChannelEntry(channel, attachment);
 
-        _channels.AddOrUpdate(channel, entry, (_, existing) =>
+        _channels.AddOrUpdate(channel, entry, (key, existing) =>
         {
             // CR-01 fix: ValueTask must be awaited; schedule cleanup on thread pool so we don't block the ConcurrentDictionary factory delegate.
             _ = Task.Run(async () =>
