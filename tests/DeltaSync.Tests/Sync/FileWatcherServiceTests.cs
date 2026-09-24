@@ -183,4 +183,50 @@ public sealed class FileWatcherServiceTests : IDisposable
         newMetaAfter!.IsDeleted.Should().BeFalse();
         newMetaAfter.RootHash.Should().Be(originMeta.RootHash);
     }
+
+    [Fact]
+    public async Task FlushAsync_ConcurrentTimerTick_GuaranteesAllPendingEventsProcessed()
+    {
+        // Arrange
+        await using var store = await CreateStoreAsync();
+        await using var watcher = new FileWatcherService(_tempSyncDir, store, LocalPeerId, TimeSpan.FromMilliseconds(500));
+
+        // Enqueue 50 file events
+        for (int i = 0; i < 50; i++)
+        {
+            string relPath = $"concurrent_{i}.dat";
+            string fullPath = Path.Combine(_tempSyncDir, relPath);
+            await File.WriteAllTextAsync(fullPath, $"payload data {i}");
+            watcher.EnqueueFileEvent(relPath);
+        }
+
+        watcher.PendingEventCount.Should().Be(50);
+
+        // Add micro-delay in event handler to induce lock contention
+        watcher.OnFileCreatedOrChanged += async (_) =>
+        {
+            await Task.Yield();
+        };
+
+        // Act: Trigger concurrent background timer tick and FlushAsync()
+        var tickTask = Task.Run(() => watcher.TriggerTimerTickAsync());
+        var flushTask = Task.Run(() => watcher.FlushAsync());
+
+        await Task.WhenAll(tickTask, flushTask);
+
+        // Assert: Verify 0 pending events remain and all 50 files are accurately reconciled in SQLite
+        watcher.PendingEventCount.Should().Be(0);
+
+        var allFiles = await store.GetAllFilesAsync(includeDeleted: false);
+        allFiles.Count.Should().Be(50);
+
+        for (int i = 0; i < 50; i++)
+        {
+            string relPath = $"concurrent_{i}.dat";
+            var meta = await store.GetFileAsync(relPath);
+            meta.Should().NotBeNull($"file '{relPath}' should be indexed in SQLite");
+            meta!.IsDeleted.Should().BeFalse();
+            meta.SizeBytes.Should().BeGreaterThan(0);
+        }
+    }
 }

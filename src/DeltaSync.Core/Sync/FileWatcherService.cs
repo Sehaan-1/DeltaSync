@@ -82,6 +82,7 @@ public sealed class FileWatcherService : IFileWatcherService
     public string RootDirectory => _rootDirectory;
     public LocalFileIngestor Ingestor => _ingestor;
     public TimeSpan DebounceWindow => _debounceWindow;
+    public int PendingEventCount => _pendingEvents.Count;
 
     public void StartWatching()
     {
@@ -121,6 +122,25 @@ public sealed class FileWatcherService : IFileWatcherService
         if (string.IsNullOrWhiteSpace(relativePath)) return false;
         string normalized = FileManifest.NormalizePath(relativePath);
         return _suppressedPaths.ContainsKey(normalized);
+    }
+
+    /// <summary>
+    /// Explicitly enqueues a file event for testing purposes.
+    /// </summary>
+    public void EnqueueFileEvent(string relativePath, bool isDeleted = false)
+    {
+        ThrowIfDisposed();
+        string normalized = FileManifest.NormalizePath(relativePath);
+        EnqueueEventInternal(normalized, isDeleted ? DebounceAction.Deleted : DebounceAction.CreatedOrChanged, null);
+    }
+
+    /// <summary>
+    /// Triggers an asynchronous timer tick processing pass (for testing concurrent lock acquisition).
+    /// </summary>
+    public Task TriggerTimerTickAsync()
+    {
+        ThrowIfDisposed();
+        return ProcessPendingEventsAsync(forceAll: false);
     }
 
     /// <summary>
@@ -336,7 +356,8 @@ public sealed class FileWatcherService : IFileWatcherService
 
     private async Task ProcessPendingEventsAsync(bool forceAll, CancellationToken cancellationToken = default)
     {
-        if (!await _processLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        int timeout = forceAll ? Timeout.Infinite : 0;
+        if (!await _processLock.WaitAsync(timeout, cancellationToken).ConfigureAwait(false))
         {
             return;
         }
