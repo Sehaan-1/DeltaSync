@@ -229,4 +229,58 @@ public sealed class FileWatcherServiceTests : IDisposable
             meta.SizeBytes.Should().BeGreaterThan(0);
         }
     }
+
+    [Fact]
+    public async Task DeleteDirectory_CascadesTombstonesToAllChildFilesInSqlite()
+    {
+        // Arrange
+        await using var store = await CreateStoreAsync();
+        await using var watcher = new FileWatcherService(_tempSyncDir, store, LocalPeerId, TimeSpan.FromMilliseconds(50));
+
+        string docsDir = Path.Combine(_tempSyncDir, "docs");
+        Directory.CreateDirectory(docsDir);
+
+        string specPath = Path.Combine(docsDir, "spec.md");
+        string archPath = Path.Combine(docsDir, "arch.pdf");
+
+        await File.WriteAllTextAsync(specPath, "# Spec Content");
+        await File.WriteAllTextAsync(archPath, "%PDF Binary Content");
+
+        await watcher.Ingestor.IngestFileAsync("docs/spec.md");
+        await watcher.Ingestor.IngestFileAsync("docs/arch.pdf");
+
+        var specBefore = await store.GetFileAsync("docs/spec.md");
+        var archBefore = await store.GetFileAsync("docs/arch.pdf");
+        specBefore.Should().NotBeNull();
+        archBefore.Should().NotBeNull();
+        specBefore!.IsDeleted.Should().BeFalse();
+        archBefore!.IsDeleted.Should().BeFalse();
+
+        var initialMerkleRoot = await store.GetMerkleNodeAsync("");
+        initialMerkleRoot.Should().NotBeNull();
+        string initialRootHash = initialMerkleRoot!.NodeHash;
+
+        watcher.StartWatching();
+
+        // Act: Delete directory "docs" physically and notify watcher
+        Directory.Delete(docsDir, recursive: true);
+        watcher.EnqueueFileEvent("docs", isDeleted: true);
+
+        // Wait for debounce window (50ms) to elapse and flush
+        await Task.Delay(150);
+        await watcher.FlushAsync();
+
+        // Assert: Both child files have is_deleted = true in SQLite
+        var specAfter = await store.GetFileAsync("docs/spec.md");
+        var archAfter = await store.GetFileAsync("docs/arch.pdf");
+
+        specAfter.Should().NotBeNull();
+        archAfter.Should().NotBeNull();
+        specAfter!.IsDeleted.Should().BeTrue("deleting folder docs must cascade tombstone to docs/spec.md");
+        archAfter!.IsDeleted.Should().BeTrue("deleting folder docs must cascade tombstone to docs/arch.pdf");
+
+        var updatedMerkleRoot = await store.GetMerkleNodeAsync("");
+        updatedMerkleRoot.Should().NotBeNull();
+        updatedMerkleRoot!.NodeHash.Should().NotBe(initialRootHash, "Merkle root must update when child files are tombstoned");
+    }
 }

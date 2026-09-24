@@ -205,7 +205,30 @@ public sealed class LocalFileIngestor
             return false;
         }
 
-        return await _stateStore.DeleteFileAsync(normalized, cancellationToken).ConfigureAwait(false);
+        bool deleted = await _stateStore.DeleteFileAsync(normalized, cancellationToken).ConfigureAwait(false);
+        if (deleted)
+        {
+            return true;
+        }
+
+        // Cascade recursive directory deletions: check if any active records exist with prefix normalized + "/"
+        string dirPrefix = normalized + "/";
+        var activeFiles = await _stateStore.GetAllFilesAsync(includeDeleted: false, cancellationToken).ConfigureAwait(false);
+        bool anyChildDeleted = false;
+
+        foreach (var file in activeFiles)
+        {
+            if (file.RelativePath.StartsWith(dirPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (await _stateStore.DeleteFileAsync(file.RelativePath, cancellationToken).ConfigureAwait(false))
+                {
+                    anyChildDeleted = true;
+                }
+            }
+        }
+
+        return anyChildDeleted;
     }
 
     /// <summary>

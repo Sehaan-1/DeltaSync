@@ -346,6 +346,18 @@ public sealed class FileWatcherService : IFileWatcherService
 
                 return existing;
             });
+
+        if (action == DebounceAction.Deleted)
+        {
+            string childPrefix = relativePath + "/";
+            foreach (var key in _pendingEvents.Keys)
+            {
+                if (key.StartsWith(childPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    _pendingEvents.TryRemove(key, out _);
+                }
+            }
+        }
     }
 
     private void OnTimerTick(object? state)
