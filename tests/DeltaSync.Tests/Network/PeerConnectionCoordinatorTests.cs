@@ -301,4 +301,54 @@ public class PeerConnectionCoordinatorTests
         coordinator.ActiveConnections.Should().BeEmpty();
         server.IsConnected.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task ConnectAsync_MultiplexedCallers_Caller2CancellationDoesNotAbortCaller1Dial()
+    {
+        var clusterId = Guid.NewGuid();
+        string peerIdA = "node-alpha";
+        string peerIdB = "node-beta";
+
+        PeerConnectionCoordinator? coordinatorB = null;
+        var dialStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var coordinatorA = new PeerConnectionCoordinator(
+            clusterId,
+            peerIdA,
+            dialer: async (remoteId, endpoint, ct) =>
+            {
+                dialStarted.TrySetResult();
+                // Delay to allow Caller 2 to join and cancel before dial finishes
+                await Task.Delay(150, ct);
+                var (localOut, remoteIn) = InMemoryTransportChannel.CreateConnectedPair(peerIdA, remoteId, clusterId);
+                _ = Task.Run(async () => await coordinatorB!.AcceptConnectionAsync(remoteIn));
+                return localOut;
+            });
+
+        coordinatorB = new PeerConnectionCoordinator(clusterId, peerIdB);
+
+        using var ctsCaller1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var ctsCaller2 = new CancellationTokenSource(TimeSpan.FromMilliseconds(30));
+
+        // Caller 1 starts dial
+        var caller1Task = coordinatorA.ConnectAsync(peerIdB, ct: ctsCaller1.Token);
+
+        // Wait until dialer has started
+        await dialStarted.Task;
+
+        // Caller 2 joins dial with short cancellation token
+        var caller2Task = coordinatorA.ConnectAsync(peerIdB, ct: ctsCaller2.Token);
+
+        // Caller 2 should throw OperationCanceledException
+        var actCaller2 = async () => await caller2Task;
+        await actCaller2.Should().ThrowAsync<OperationCanceledException>();
+
+        // Caller 1 must succeed despite Caller 2's cancellation
+        var channel1 = await caller1Task;
+        channel1.Should().NotBeNull();
+        channel1!.IsConnected.Should().BeTrue();
+
+        await coordinatorB.DisposeAsync();
+    }
 }
+

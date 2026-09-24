@@ -489,27 +489,15 @@ public sealed class PeerConnectionCoordinator : IPeerConnectionCoordinator
         }
 
         /// <summary>
-        /// Links an additional caller's <paramref name="callerToken"/> into the shared
-        /// cancellation source. The underlying dial will be cancelled when ALL linked
-        /// tokens have fired (or <see cref="Abort"/> is called explicitly).
+        /// Links an additional caller into the shared dial. Caller-specific timeouts and cancellations
+        /// are isolated and evaluated independently via <see cref="Task.WaitAsync(CancellationToken)"/>
+        /// in <see cref="ConnectAsync"/> without aborting the underlying shared connection attempt.
         /// </summary>
         public void LinkCaller(CancellationToken callerToken)
         {
-            if (callerToken == CancellationToken.None || _isYielded == 1) return;
-            // Re-create the linked CTS to include the new token.
-            var old = _linkedCts;
-            var combined = CancellationTokenSource.CreateLinkedTokenSource(old.Token, callerToken);
-            // If the old source was already cancelled propagate immediately.
-            if (old.IsCancellationRequested) combined.Cancel();
-            // Note: we intentionally do not dispose `old` here — Token consumers
-            // already hold a reference and disposal would invalidate their registrations.
-            _ = combined; // replaces _linkedCts logically; Token property re-evaluated below
-            // Simpler: just register a callback on the callerToken to cancel the shared CTS.
-            callerToken.Register(static state =>
-            {
-                try { ((CancellationTokenSource)state!).Cancel(); }
-                catch (ObjectDisposedException) { /* CTS already disposed, nothing to do */ }
-            }, _linkedCts);
+            // Intentionally no-op: caller cancellation is decoupled from the underlying shared dial task.
+            // Each multiplexed caller awaits existingDialTask.WaitAsync(ct), ensuring that a single
+            // caller timing out or cancelling does not abort connection establishment for other callers.
         }
 
         public void SetChannel(IPeerTransportChannel channel)
