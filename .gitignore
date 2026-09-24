@@ -36,6 +36,11 @@ graphify-out/
 scratch/
 skills-lock.json
 
+## Brag (launch video generator)
+brag-output/
+brag-slim-output/
+*.brag-tmp/
+
 ## Private docs (never push to GitHub)
 docs/cuecards/
 docs/lanes/

@@ -99,7 +99,8 @@ public sealed record FileManifestResponse(
     long TotalBytes,
     VectorClock Clock,
     IReadOnlyList<WireChunkRecord> Chunks,
-    bool IsDeleted = false)
+    bool IsDeleted = false,
+    DateTimeOffset ModifiedUtc = default)
 {
     public FileManifest ToFileManifest()
     {
@@ -107,10 +108,10 @@ public sealed record FileManifestResponse(
         return new FileManifest(RelativePath, TotalBytes, ContentHash, descriptors);
     }
 
-    public static FileManifestResponse FromFileManifest(FileManifest manifest, VectorClock clock)
+    public static FileManifestResponse FromFileManifest(FileManifest manifest, VectorClock clock, DateTimeOffset modifiedUtc = default)
     {
         var chunks = manifest.Chunks.Select(WireChunkRecord.FromDescriptor).ToList();
-        return new FileManifestResponse(manifest.RelativePath, manifest.RootHash, manifest.FileSize, clock, chunks);
+        return new FileManifestResponse(manifest.RelativePath, manifest.RootHash, manifest.FileSize, clock, chunks, IsDeleted: false, ModifiedUtc: modifiedUtc);
     }
 }
 

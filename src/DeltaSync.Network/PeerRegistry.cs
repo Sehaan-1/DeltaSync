@@ -55,19 +55,14 @@ public sealed class PeerRegistry
         }
     }
 
+    // M-05 fix: maintained separately so ActiveCount is O(1) instead of a LINQ scan under the lock.
+    private int _activeCount;
+
     /// <summary>
     /// Number of active peers (state is Discovered, Connected, or Stale).
+    /// O(1) — updated on every state transition instead of iterating all peers.
     /// </summary>
-    public int ActiveCount
-    {
-        get
-        {
-            lock (_syncRoot)
-            {
-                return _peersById.Values.Count(p => p.State != PeerState.Dead);
-            }
-        }
-    }
+    public int ActiveCount => Volatile.Read(ref _activeCount);
 
     /// <summary>
     /// Registers a newly heard beacon or updates an existing peer's last seen timestamp and endpoint.
@@ -142,6 +137,7 @@ public sealed class PeerRegistry
 
                 peer = newRecord.Snapshot();
                 discoveredNew = peer;
+                Interlocked.Increment(ref _activeCount); // new active peer
             }
         }
 
@@ -190,6 +186,7 @@ public sealed class PeerRegistry
 
                 peer = newRecord.Snapshot();
                 discoveredNew = peer;
+                Interlocked.Increment(ref _activeCount); // new active peer
             }
         }
 
@@ -326,6 +323,7 @@ public sealed class PeerRegistry
             {
                 existing.State = PeerState.Dead;
                 snapshot = existing.Snapshot();
+                Interlocked.Decrement(ref _activeCount); // peer is no longer active
 
                 if (evict)
                 {
@@ -412,5 +410,6 @@ public sealed class PeerRegistry
             _peersByHashHex.Clear();
             _peersByEndpoint.Clear();
         }
+        Interlocked.Exchange(ref _activeCount, 0);
     }
 }

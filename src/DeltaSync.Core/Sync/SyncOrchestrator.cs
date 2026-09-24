@@ -6,6 +6,7 @@ using DeltaSync.Core.Models;
 using DeltaSync.Core.Storage;
 using DeltaSync.Core.Sync.Wire;
 using DeltaSync.Network;
+using Microsoft.Extensions.Logging;
 
 namespace DeltaSync.Core.Sync;
 
@@ -29,6 +30,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
     private readonly ISyncMetricsSink _metricsSink;
     private readonly string _localPeerId;
     private readonly TimeSpan _antiEntropyInterval;
+    private readonly ILogger<SyncOrchestrator>? _logger;
 
     private readonly ConcurrentDictionary<IPeerTransportChannel, ChannelEntry> _channels = new();
     private Timer? _antiEntropyTimer;
@@ -58,7 +60,8 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         IPeerChannelProvider? peerProvider = null,
         ISyncMetricsSink? metricsSink = null,
         string? localPeerId = null,
-        TimeSpan? antiEntropyInterval = null)
+        TimeSpan? antiEntropyInterval = null,
+        ILogger<SyncOrchestrator>? logger = null)
     {
         if (string.IsNullOrWhiteSpace(syncRootDirectory))
             throw new ArgumentException("Sync root directory cannot be null or whitespace.", nameof(syncRootDirectory));
@@ -74,6 +77,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         _ingestor = ingestor;
         _peerProvider = peerProvider;
         _metricsSink = metricsSink ?? NullSyncMetricsSink.Instance;
+        _logger = logger;
 
         _localPeerId = !string.IsNullOrWhiteSpace(localPeerId)
             ? localPeerId.Trim()
@@ -146,6 +150,11 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
 
         _runCts?.Cancel();
 
+        // L-01: Concurrency note — StopAsync sets _isRunning = 0 via Interlocked.CompareExchange
+        // (line 146) before awaiting DisposeAsync on the timer. Any heartbeat callback that fires
+        // concurrently will observe IsRunning == false and return immediately, so it cannot race
+        // the DisposeAsync call below. _antiEntropyTimer is then nulled only after disposal
+        // completes, making the sequence deterministic.
         if (_antiEntropyTimer != null)
         {
             await _antiEntropyTimer.DisposeAsync().ConfigureAwait(false);
@@ -184,23 +193,35 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
 
         _channels.AddOrUpdate(channel, entry, (_, existing) =>
         {
-            existing.WireAttachment.DisposeAsync();
-            existing.SyncLock.Dispose();
+            // CR-01 fix: ValueTask must be awaited; schedule cleanup on thread pool so we don't block the ConcurrentDictionary factory delegate.
+            _ = Task.Run(async () =>
+            {
+                try { await existing.WireAttachment.DisposeAsync().ConfigureAwait(false); }
+                catch { /* best-effort */ }
+                finally { existing.SyncLock.Dispose(); }
+            });
             return entry;
         });
 
-        // Trigger immediate anti-entropy sync upon connection
+        // Trigger immediate anti-entropy sync upon connection.
+        // M-04 fix: capture the token BEFORE entering the lambda; _runCts is nulled during
+        // StopAsync and we must not substitute CancellationToken.None after that point.
         if (IsRunning && channel.IsConnected)
         {
+            var syncToken = _runCts?.Token ?? CancellationToken.None;
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    await SynchronizeAsync(channel, _runCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
+                    await SynchronizeAsync(channel, syncToken).ConfigureAwait(false);
                 }
-                catch
+                catch (OperationCanceledException) when (syncToken.IsCancellationRequested)
                 {
-                    // Suppress fire-and-forget exceptions
+                    // Intentional shutdown — do not mask cancellation.
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "Initial sync failed for channel {PeerId}", channel.RemotePeerId);
                 }
             });
         }
@@ -323,9 +344,15 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
             {
                 await SynchronizeAsync(ch, ct).ConfigureAwait(false);
             }
-            catch
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // Isolate individual channel failures
+                // H-04 fix: propagate intentional shutdown; do not mask cancellation.
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Isolate individual channel failures — log at warning level.
+                _logger?.LogWarning(ex, "Sync failed for channel {PeerId}", ch.RemotePeerId);
             }
         });
 
@@ -349,6 +376,10 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                 var dirInfo = new DirectoryInfo(dir);
                 foreach (var file in dirInfo.EnumerateFiles("*.tmp", SearchOption.AllDirectories))
                 {
+                    // H-06 fix: only delete files older than 60 s — avoids clobbering an in-progress
+                    // transfer from a second DeltaSync instance sharing the same sync root.
+                    if (file.LastWriteTimeUtc >= DateTime.UtcNow.AddSeconds(-60))
+                        continue;
                     try
                     {
                         file.Delete();
@@ -507,7 +538,11 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         CancellationToken ct)
     {
         string destinationFilePath = Path.GetFullPath(Path.Combine(_syncRootDirectory, normalizedPath));
-        if (!destinationFilePath.StartsWith(_canonicalRoot, StringComparison.OrdinalIgnoreCase))
+        // H-01 fix: Linux filesystems are case-sensitive; use platform-appropriate comparison.
+        var pathComparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (!destinationFilePath.StartsWith(_canonicalRoot, pathComparison))
         {
             throw new InvalidOperationException($"Security boundary violation: '{normalizedPath}' resolves outside sync root.");
         }
@@ -523,13 +558,15 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                 _stagingDirectory,
                 ct).ConfigureAwait(false);
 
-            // Commit metadata and chunk mapping to SQLite
+            // Commit metadata and chunk mapping to SQLite.
+            // M-01 fix: preserve the remote file's original mtime from the manifest so that
+            // FileWatcherService.FlushAsync does not repeatedly re-ingest already-synced files.
             var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
             var newMetadata = new FileMetadata(
                 relativePath: normalizedPath,
                 sizeBytes: remoteManifest.TotalBytes,
                 rootHash: remoteManifest.ContentHash,
-                modifiedUtc: DateTimeOffset.UtcNow,
+                modifiedUtc: remoteManifest.ModifiedUtc,
                 clock: targetClock,
                 isDeleted: false,
                 version: (localMeta?.Version ?? 0) + 1);
@@ -572,7 +609,11 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                  !string.Equals(p, normalizedPath, StringComparison.OrdinalIgnoreCase));
 
         string siblingFullPath = Path.GetFullPath(Path.Combine(_syncRootDirectory, siblingRelPath));
-        if (!siblingFullPath.StartsWith(_canonicalRoot, StringComparison.OrdinalIgnoreCase))
+        // H-01 fix: Linux filesystems are case-sensitive; use platform-appropriate comparison.
+        var siblingPathComparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (!siblingFullPath.StartsWith(_canonicalRoot, siblingPathComparison))
         {
             throw new InvalidOperationException($"Security boundary violation: sibling '{siblingRelPath}' resolves outside sync root.");
         }
@@ -607,11 +648,12 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                     ct).ConfigureAwait(false);
 
                 var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
+                // M-01 fix: use original remote mtime for the sibling conflict copy.
                 var siblingMetadata = new FileMetadata(
                     relativePath: siblingRelPath,
                     sizeBytes: remoteManifest.TotalBytes,
                     rootHash: remoteManifest.ContentHash,
-                    modifiedUtc: DateTimeOffset.UtcNow,
+                    modifiedUtc: remoteManifest.ModifiedUtc,
                     clock: resolution.SiblingVector ?? remoteManifest.Clock,
                     isDeleted: false,
                     version: 1);
@@ -662,11 +704,12 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                     ct).ConfigureAwait(false);
 
                 var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
+                // M-01 fix: use original remote mtime for the primary path in the conflict branch.
                 var primaryMetadata = new FileMetadata(
                     relativePath: normalizedPath,
                     sizeBytes: remoteManifest.TotalBytes,
                     rootHash: remoteManifest.ContentHash,
-                    modifiedUtc: DateTimeOffset.UtcNow,
+                    modifiedUtc: remoteManifest.ModifiedUtc,
                     clock: primaryClock,
                     isDeleted: false,
                     version: (localMeta?.Version ?? 0) + 1);
@@ -685,39 +728,45 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
     private async Task HandleLocalFileChangedAsync(string relativePath)
     {
         if (!IsRunning) return;
+        var ct = _runCts?.Token ?? CancellationToken.None;
         try
         {
-            await SynchronizeAllAsync(_runCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
+            await SynchronizeAllAsync(ct).ConfigureAwait(false);
         }
-        catch
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
         {
-            // Suppress unhandled watcher sync errors
+            _logger?.LogWarning(ex, "Watcher sync failed for changed path {RelativePath}", relativePath);
         }
     }
 
     private async Task HandleLocalFileDeletedAsync(string relativePath)
     {
         if (!IsRunning) return;
+        var ct = _runCts?.Token ?? CancellationToken.None;
         try
         {
-            await SynchronizeAllAsync(_runCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
+            await SynchronizeAllAsync(ct).ConfigureAwait(false);
         }
-        catch
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
         {
-            // Suppress unhandled watcher sync errors
+            _logger?.LogWarning(ex, "Watcher sync failed for deleted path {RelativePath}", relativePath);
         }
     }
 
     private async Task HandleLocalFileRenamedAsync(string oldRelativePath, string newRelativePath)
     {
         if (!IsRunning) return;
+        var ct = _runCts?.Token ?? CancellationToken.None;
         try
         {
-            await SynchronizeAllAsync(_runCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
+            await SynchronizeAllAsync(ct).ConfigureAwait(false);
         }
-        catch
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
         {
-            // Suppress unhandled watcher sync errors
+            _logger?.LogWarning(ex, "Watcher sync failed for rename {OldPath} -> {NewPath}", oldRelativePath, newRelativePath);
         }
     }
 
@@ -729,32 +778,52 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
 
     private void HandlePeerConnectionClosed(object? sender, string peerId)
     {
-        var toRemove = _channels.Keys.FirstOrDefault(ch => string.Equals(ch.RemotePeerId, peerId, StringComparison.OrdinalIgnoreCase));
+        var toRemove = _channels.Keys.FirstOrDefault(
+            ch => string.Equals(ch.RemotePeerId, peerId, StringComparison.OrdinalIgnoreCase));
         if (toRemove != null && _channels.TryRemove(toRemove, out var entry))
         {
-            entry.WireAttachment.DisposeAsync();
-            entry.SyncLock.Dispose();
+            // CR-02 fix: synchronous event handler cannot await ValueTask; schedule on thread pool.
+            _ = Task.Run(async () =>
+            {
+                try { await entry.WireAttachment.DisposeAsync().ConfigureAwait(false); }
+                catch { }
+                finally { entry.SyncLock.Dispose(); }
+            });
         }
     }
 
     private void OnAntiEntropyHeartbeat(object? state)
     {
         if (!IsRunning) return;
+
+        // Capture token before entering the Task.Run lambda; _runCts is nulled during StopAsync
+        // and we must not substitute CancellationToken.None after that point (M-04 companion fix).
+        var ct = _runCts?.Token ?? CancellationToken.None;
+
         _ = Task.Run(async () =>
         {
             try
             {
-                await SynchronizeAllAsync(_runCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
+                await SynchronizeAllAsync(ct).ConfigureAwait(false);
             }
-            catch
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // Suppress background heartbeat exceptions
+                // H-04 fix: intentional shutdown — do not suppress the cancellation signal.
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Heartbeat failure: log at warning so failures are visible without crashing.
+                _logger?.LogWarning(ex, "Anti-entropy heartbeat failed");
             }
         });
     }
 
     public void Dispose()
     {
+        // L-01: Interlocked.CompareExchange ensures that if both Dispose() and DisposeAsync()
+        // are called concurrently (e.g. two overlapping `using` scopes), only one will proceed.
+        // The losing caller returns immediately without double-stopping or double-disposing.
         if (Interlocked.CompareExchange(ref _isDisposed, 1, 0) != 0)
         {
             return;
@@ -766,6 +835,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
 
     public async ValueTask DisposeAsync()
     {
+        // L-01: Same guard as Dispose() — see comment above.
         if (Interlocked.CompareExchange(ref _isDisposed, 1, 0) != 0)
         {
             return;

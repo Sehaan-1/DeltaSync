@@ -388,7 +388,8 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
                     {
                         var chunks = await _stateStore.GetFileChunksAsync(query.RelativePath, ct).ConfigureAwait(false);
                         var wireChunks = chunks.Select(WireChunkRecord.FromDescriptor).ToList();
-                        var manifestResp = new FileManifestResponse(fileMeta.RelativePath, fileMeta.RootHash, fileMeta.SizeBytes, fileMeta.Clock, wireChunks, IsDeleted: false);
+                        // M-01 fix: propagate the file's original mtime so the receiver preserves it.
+                        var manifestResp = new FileManifestResponse(fileMeta.RelativePath, fileMeta.RootHash, fileMeta.SizeBytes, fileMeta.Clock, wireChunks, IsDeleted: false, ModifiedUtc: fileMeta.ModifiedUtc);
                         await SendResponseAsync(session, SyncMessageType.FileManifestResponse, frame.CorrelationId, manifestResp, ct).ConfigureAwait(false);
                     }
                     break;

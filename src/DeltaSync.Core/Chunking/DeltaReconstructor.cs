@@ -172,8 +172,13 @@ public static class DeltaReconstructor
     }
 
     /// <summary>
-    /// Synchronously reconstructs a target file using local and remote chunks.
+    /// Synchronously reconstructs a target file.
     /// </summary>
+    /// <remarks>
+    /// M-06: This overload blocks a thread-pool thread for the full IO duration and can deadlock
+    /// in synchronization contexts (ASP.NET Framework, WinForms). Prefer <see cref="ReconstructAsync"/>.
+    /// </remarks>
+    [Obsolete("Sync-over-async can deadlock. Use ReconstructAsync instead.", error: false)]
     public static ReconstructionResult Reconstruct(
         FileManifest targetManifest,
         string destinationFilePath,
@@ -181,7 +186,9 @@ public static class DeltaReconstructor
         IRemoteChunkSource remoteChunkSource,
         string? tempDirectory = null)
     {
-        return ReconstructAsync(targetManifest, destinationFilePath, localChunkProvider, remoteChunkSource, tempDirectory, CancellationToken.None)
+        // Runs on thread pool to avoid SynchronizationContext deadlock but still blocks the caller.
+        return Task.Run(() => ReconstructAsync(
+                targetManifest, destinationFilePath, localChunkProvider, remoteChunkSource, tempDirectory, CancellationToken.None))
             .GetAwaiter()
             .GetResult();
     }

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace DeltaSync.Core.Chunking;
 
 /// <summary>
@@ -7,6 +9,12 @@ namespace DeltaSync.Core.Chunking;
 public static class GearTable
 {
     public static readonly ulong[] Table = InitializeTable();
+
+    static GearTable()
+    {
+        // FastCdcChunker indexes Table[byte] — exactly 256 entries are required.
+        Debug.Assert(Table.Length == 256, "GearTable must have exactly 256 entries.");
+    }
 
     private static ulong[] InitializeTable()
     {

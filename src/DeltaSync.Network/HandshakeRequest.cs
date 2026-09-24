@@ -24,6 +24,12 @@ public sealed record HandshakeRequest(
     public const ushort CurrentVersion = 1;
 
     /// <summary>
+    /// Oldest protocol version this node will accept from a remote peer.
+    /// Increment this only on breaking wire-format changes.
+    /// </summary>
+    public const ushort MinVersion = 1;
+
+    /// <summary>
     /// Maximum allowed UTF-8 byte length for canonical PeerId (Spec §2 Preconditions: &lt;= 64 bytes).
     /// </summary>
     public const int MaxPeerIdByteLength = 64;

@@ -18,7 +18,9 @@ public sealed class SqliteStateStore : ISqliteStateStore
 {
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private bool _disposed;
+    // H-05 fix: volatile ensures CPU cache coherence so any thread sees the updated value
+    // immediately without acquiring a lock. Avoids stale-false reads on multi-core systems.
+    private volatile bool _disposed;
 
     public SqliteStateStore(ISqliteConnectionFactory connectionFactory)
     {
@@ -273,31 +275,51 @@ public sealed class SqliteStateStore : ISqliteStateStore
         var localHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        // Parameterized batch queries (500 hashes per batch for optimal latency)
-        const int batchSize = 500;
-        var hashList = uniqueHashes.ToList();
-
-        for (int i = 0; i < hashList.Count; i += batchSize)
+        // M-02 fix: use a session-scoped temp table instead of a dynamic 500-param IN clause.
+        // SQLite can prepare the INSERT and SELECT once, avoiding re-parse/re-plan on every batch.
+        await using (var createTmp = connection.CreateCommand())
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            int currentBatchCount = Math.Min(batchSize, hashList.Count - i);
+            createTmp.CommandText = "CREATE TEMP TABLE IF NOT EXISTS _probe_hashes (hash TEXT PRIMARY KEY NOT NULL);";
+            await createTmp.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
 
-            await using var cmd = connection.CreateCommand();
-            var parameters = new string[currentBatchCount];
-            for (int j = 0; j < currentBatchCount; j++)
+        try
+        {
+            // Populate the temp table with all hashes to probe
+            await using var insertCmd = connection.CreateCommand();
+            insertCmd.CommandText = "INSERT OR IGNORE INTO _probe_hashes (hash) VALUES ($h);";
+            var pInsert = insertCmd.Parameters.Add("$h", SqliteType.Text);
+
+            foreach (var hash in uniqueHashes)
             {
-                string paramName = $"$h{j}";
-                parameters[j] = paramName;
-                cmd.Parameters.AddWithValue(paramName, hashList[i + j]);
+                cancellationToken.ThrowIfCancellationRequested();
+                pInsert.Value = hash;
+                await insertCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            cmd.CommandText = $"SELECT chunk_hash FROM chunks WHERE chunk_hash IN ({string.Join(',', parameters)});";
+            // Single JOIN query to find which hashes already exist in the chunk store
+            await using var selectCmd = connection.CreateCommand();
+            selectCmd.CommandText = @"
+                SELECT c.chunk_hash
+                FROM chunks c
+                INNER JOIN _probe_hashes p ON c.chunk_hash = p.hash;";
 
-            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            await using var reader = await selectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 localHashes.Add(reader.GetString(0));
             }
+        }
+        finally
+        {
+            // Clean up temp table so it doesn't persist across calls on a pooled connection
+            try
+            {
+                await using var dropTmp = connection.CreateCommand();
+                dropTmp.CommandText = "DROP TABLE IF EXISTS _probe_hashes;";
+                await dropTmp.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch { /* best-effort cleanup */ }
         }
 
         var missingHashes = new HashSet<string>(uniqueHashes.Except(localHashes, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);

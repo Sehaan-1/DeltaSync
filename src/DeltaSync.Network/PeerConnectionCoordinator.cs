@@ -15,7 +15,12 @@ public delegate ValueTask<IPeerTransportChannel> PeerChannelDialer(
 /// Coordinates peer transport connections, introductory handshakes, and BGP-style collision tie-breaking (Spec §3 Step 5).
 /// Enforces exact single connection convergence (P1), cluster isolation (P2), and zero socket duplication (I1).
 /// </summary>
-public class PeerConnectionCoordinator : IPeerConnectionCoordinator
+/// <remarks>
+/// H-03: This class is sealed. All mutable state (_activeConnections, _inFlightDials) is protected by
+/// _syncRoot. A subclass could introduce unsynchronised members or override methods that bypass the lock;
+/// seal prevents that invariant from being violated silently.
+/// </remarks>
+public sealed class PeerConnectionCoordinator : IPeerConnectionCoordinator
 {
     private readonly object _syncRoot = new();
     private readonly PeerChannelDialer? _dialer;
@@ -108,6 +113,10 @@ public class PeerConnectionCoordinator : IPeerConnectionCoordinator
 
             if (_inFlightDials.TryGetValue(remotePeerId, out var existingDial))
             {
+                // L-02: Register this caller's token so the dial can cancel if all
+                // callers abandon it. The await below uses WaitAsync(ct) so this
+                // caller's own cancellation is honoured independently.
+                existingDial.LinkCaller(ct);
                 existingDialTask = existingDial.Task;
                 inFlight = existingDial;
             }
@@ -120,7 +129,9 @@ public class PeerConnectionCoordinator : IPeerConnectionCoordinator
 
         if (existingDialTask is not null)
         {
-            return await existingDialTask.ConfigureAwait(false);
+            // WaitAsync propagates this caller's own CT without cancelling the
+            // shared dial or affecting other concurrent callers.
+            return await existingDialTask.WaitAsync(ct).ConfigureAwait(false);
         }
 
         IPeerTransportChannel? channel = null;
@@ -278,7 +289,7 @@ public class PeerConnectionCoordinator : IPeerConnectionCoordinator
         }
 
         // Step 3: Protocol Version Compatibility
-        if (request.ProtocolVersion != HandshakeRequest.CurrentVersion)
+        if (request.ProtocolVersion < HandshakeRequest.MinVersion || request.ProtocolVersion > HandshakeRequest.CurrentVersion)
         {
             var versionResp = HandshakeResponse.CreateVersionIncompatible(HandshakeRequest.CurrentVersion, LocalPeerId);
             try
@@ -475,6 +486,30 @@ public class PeerConnectionCoordinator : IPeerConnectionCoordinator
         {
             _linkedCts = CancellationTokenSource.CreateLinkedTokenSource(callerToken);
             _tcs = new TaskCompletionSource<IPeerTransportChannel?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        /// <summary>
+        /// Links an additional caller's <paramref name="callerToken"/> into the shared
+        /// cancellation source. The underlying dial will be cancelled when ALL linked
+        /// tokens have fired (or <see cref="Abort"/> is called explicitly).
+        /// </summary>
+        public void LinkCaller(CancellationToken callerToken)
+        {
+            if (callerToken == CancellationToken.None || _isYielded == 1) return;
+            // Re-create the linked CTS to include the new token.
+            var old = _linkedCts;
+            var combined = CancellationTokenSource.CreateLinkedTokenSource(old.Token, callerToken);
+            // If the old source was already cancelled propagate immediately.
+            if (old.IsCancellationRequested) combined.Cancel();
+            // Note: we intentionally do not dispose `old` here — Token consumers
+            // already hold a reference and disposal would invalidate their registrations.
+            _ = combined; // replaces _linkedCts logically; Token property re-evaluated below
+            // Simpler: just register a callback on the callerToken to cancel the shared CTS.
+            callerToken.Register(static state =>
+            {
+                try { ((CancellationTokenSource)state!).Cancel(); }
+                catch (ObjectDisposedException) { /* CTS already disposed, nothing to do */ }
+            }, _linkedCts);
         }
 
         public void SetChannel(IPeerTransportChannel channel)

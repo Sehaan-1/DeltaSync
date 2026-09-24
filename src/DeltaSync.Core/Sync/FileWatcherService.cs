@@ -23,7 +23,9 @@ public sealed class FileWatcherService : IFileWatcherService
     private readonly SemaphoreSlim _flushLock = new(1, 1);
 
     private bool _isWatching;
-    private bool _disposed;
+    // H-02 fix: use int + Interlocked.CompareExchange for atomic, race-free dispose guard.
+    // (A plain bool _disposed is subject to TOCTOU if Dispose() and DisposeAsync() run concurrently.)
+    private int _disposeState; // 0 = alive, 1 = disposed
 
     public event Func<string, Task>? OnFileCreatedOrChanged;
     public event Func<string, Task>? OnFileDeleted;
@@ -93,7 +95,7 @@ public sealed class FileWatcherService : IFileWatcherService
 
     public void StopWatching()
     {
-        if (_disposed || !_isWatching) return;
+        if (Volatile.Read(ref _disposeState) != 0 || !_isWatching) return;
 
         _watcher.EnableRaisingEvents = false;
         _isWatching = false;
@@ -166,9 +168,15 @@ public sealed class FileWatcherService : IFileWatcherService
                 else
                 {
                     var fi = new FileInfo(fullPath);
-                    if (fi.Exists && (fi.Length != record.SizeBytes || fi.LastWriteTimeUtc != record.ModifiedUtc))
+                    if (fi.Exists)
                     {
-                        needsIngest = true;
+                        // M-03 fix: use a 2-second tolerance to handle FAT32/SMB timestamp granularity
+                        // and prevent perpetual re-ingestion of files whose mtime differs by sub-second rounding.
+                        var timeDiff = Math.Abs((fi.LastWriteTimeUtc - record.ModifiedUtc.UtcDateTime).TotalSeconds);
+                        if (fi.Length != record.SizeBytes || timeDiff > 2.0)
+                        {
+                            needsIngest = true;
+                        }
                     }
                 }
 
@@ -203,7 +211,7 @@ public sealed class FileWatcherService : IFileWatcherService
 
     private void EnqueueFileSystemEvent(string fullPath, DebounceAction action)
     {
-        if (_disposed || !TryResolveRelativePath(fullPath, out string? relativePath))
+        if (Volatile.Read(ref _disposeState) != 0 || !TryResolveRelativePath(fullPath, out string? relativePath))
         {
             return;
         }
@@ -225,7 +233,7 @@ public sealed class FileWatcherService : IFileWatcherService
 
     private void EnqueueRenameEvent(string oldFullPath, string newFullPath)
     {
-        if (_disposed) return;
+        if (Volatile.Read(ref _disposeState) != 0) return;
 
         bool hasOld = TryResolveRelativePath(oldFullPath, out string? oldRelative);
         bool hasNew = TryResolveRelativePath(newFullPath, out string? newRelative);
@@ -322,7 +330,7 @@ public sealed class FileWatcherService : IFileWatcherService
 
     private void OnTimerTick(object? state)
     {
-        if (_disposed) return;
+        if (Volatile.Read(ref _disposeState) != 0) return;
         _ = ProcessPendingEventsAsync(forceAll: false);
     }
 
@@ -471,13 +479,13 @@ public sealed class FileWatcherService : IFileWatcherService
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (Volatile.Read(ref _disposeState) != 0)
+            throw new ObjectDisposedException(GetType().FullName);
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.CompareExchange(ref _disposeState, 1, 0) != 0) return;
 
         StopWatching();
         _debounceTimer.Dispose();
@@ -488,8 +496,7 @@ public sealed class FileWatcherService : IFileWatcherService
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.CompareExchange(ref _disposeState, 1, 0) != 0) return;
 
         StopWatching();
         await _debounceTimer.DisposeAsync().ConfigureAwait(false);

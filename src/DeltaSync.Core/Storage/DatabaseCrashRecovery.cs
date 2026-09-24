@@ -123,7 +123,7 @@ public static class DatabaseCrashRecovery
 
         string fullPath = Path.GetFullPath(databasePath);
         string suffix = string.IsNullOrWhiteSpace(backupSuffix) ? ".corrupt" : backupSuffix;
-        string timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+        string timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff");
 
         MoveFileIfExists(fullPath, $"{fullPath}{suffix}_{timestamp}");
         MoveFileIfExists($"{fullPath}-wal", $"{fullPath}-wal{suffix}_{timestamp}");
