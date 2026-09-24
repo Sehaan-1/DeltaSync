@@ -564,6 +564,18 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                 _stagingDirectory,
                 ct).ConfigureAwait(false);
 
+            if (remoteManifest.ModifiedUtc != default)
+            {
+                try
+                {
+                    File.SetLastWriteTimeUtc(destinationFilePath, remoteManifest.ModifiedUtc.UtcDateTime);
+                }
+                catch
+                {
+                    // preserve resilience on permission-restricted filesystems
+                }
+            }
+
             // Commit metadata and chunk mapping to SQLite.
             // M-01 fix: preserve the remote file's original mtime from the manifest so that
             // FileWatcherService.FlushAsync does not repeatedly re-ingest already-synced files.
@@ -653,6 +665,18 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                     _stagingDirectory,
                     ct).ConfigureAwait(false);
 
+                if (remoteManifest.ModifiedUtc != default)
+                {
+                    try
+                    {
+                        File.SetLastWriteTimeUtc(siblingFullPath, remoteManifest.ModifiedUtc.UtcDateTime);
+                    }
+                    catch
+                    {
+                        // preserve resilience on permission-restricted filesystems
+                    }
+                }
+
                 var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
                 // M-01 fix: use original remote mtime for the sibling conflict copy.
                 var siblingMetadata = new FileMetadata(
@@ -685,6 +709,17 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                     string? siblingDir = Path.GetDirectoryName(siblingFullPath);
                     if (!string.IsNullOrEmpty(siblingDir)) Directory.CreateDirectory(siblingDir);
                     File.Copy(primaryFullPath, siblingFullPath, overwrite: true);
+                    if (localMeta != null && localMeta.ModifiedUtc != default)
+                    {
+                        try
+                        {
+                            File.SetLastWriteTimeUtc(siblingFullPath, localMeta.ModifiedUtc.UtcDateTime);
+                        }
+                        catch
+                        {
+                            // preserve resilience on permission-restricted filesystems
+                        }
+                    }
                 }
 
                 if (localMeta != null)
@@ -708,6 +743,18 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                     primaryFullPath,
                     _stagingDirectory,
                     ct).ConfigureAwait(false);
+
+                if (remoteManifest.ModifiedUtc != default)
+                {
+                    try
+                    {
+                        File.SetLastWriteTimeUtc(primaryFullPath, remoteManifest.ModifiedUtc.UtcDateTime);
+                    }
+                    catch
+                    {
+                        // preserve resilience on permission-restricted filesystems
+                    }
+                }
 
                 var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
                 // M-01 fix: use original remote mtime for the primary path in the conflict branch.

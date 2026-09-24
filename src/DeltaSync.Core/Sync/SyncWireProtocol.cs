@@ -276,6 +276,18 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
             tempDirectory,
             ct).ConfigureAwait(false);
 
+        if (remoteManifest.ModifiedUtc != default)
+        {
+            try
+            {
+                File.SetLastWriteTimeUtc(destinationFilePath, remoteManifest.ModifiedUtc.UtcDateTime);
+            }
+            catch
+            {
+                // preserve resilience on permission-restricted filesystems
+            }
+        }
+
         _metricsSink.RecordChunkDeduplicated(result.ReusedBytes);
         return result;
     }

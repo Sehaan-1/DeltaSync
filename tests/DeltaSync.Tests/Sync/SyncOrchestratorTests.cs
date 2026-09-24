@@ -187,4 +187,71 @@ public class SyncOrchestratorTests : IAsyncDisposable
         updatedMeta.Clock.IsDominating(clockA).Should().BeTrue();
         updatedMeta.Clock.IsDominating(clockB).Should().BeTrue();
     }
+
+    [Fact]
+    public async Task ReconstructFile_PreservesPhysicalLastWriteTime_DoesNotTriggerFlushReingest()
+    {
+        string dirA = Path.Combine(_tempDir, "NodeA_mtime");
+        string dirB = Path.Combine(_tempDir, "NodeB_mtime");
+        Directory.CreateDirectory(dirA);
+        Directory.CreateDirectory(dirB);
+
+        var (chanA, chanB) = InMemoryTransportChannel.CreateConnectedPair("NodeA", "NodeB", _clusterId);
+        _disposables.Add(chanA);
+        _disposables.Add(chanB);
+
+        using var storeA = new MemoryStateStore();
+        using var storeB = new MemoryStateStore();
+
+        // Node B has a file modified 5 hours ago
+        var pastModifiedUtc = DateTimeOffset.UtcNow.AddHours(-5);
+        string fileContent = "Data synchronized from Node B with past mtime";
+        byte[] dataB = Encoding.UTF8.GetBytes(fileContent);
+        var manifestB = ChunkFingerprinter.CreateManifest("remote_file.txt", dataB);
+        var clockB = VectorClock.Empty.Tick("NodeB");
+        var metaB = new FileMetadata("remote_file.txt", manifestB.FileSize, manifestB.RootHash, pastModifiedUtc, clockB);
+        await storeB.UpsertFileAsync(metaB, manifestB.Chunks);
+
+        string fullPathB = Path.Combine(dirB, "remote_file.txt");
+        await File.WriteAllBytesAsync(fullPathB, dataB);
+        File.SetLastWriteTimeUtc(fullPathB, pastModifiedUtc.UtcDateTime);
+
+        var wireA = new SyncWireProtocol(storeA, syncRootDirectory: dirA);
+        var wireB = new SyncWireProtocol(storeB, syncRootDirectory: dirB);
+        _disposables.Add(wireA);
+        _disposables.Add(wireB);
+
+        var watcherA = new FileWatcherService(dirA, storeA, localPeerId: "NodeA");
+        _disposables.Add(watcherA);
+
+        var orchA = new SyncOrchestrator(dirA, storeA, wireA, watcherService: watcherA, localPeerId: "NodeA");
+        _disposables.Add(orchA);
+
+        orchA.AttachChannel(chanA);
+        wireB.AttachChannel(chanB);
+
+        // Act 1: Sync from B to A (reconstruct remote file)
+        bool changes = await orchA.SynchronizeAsync(chanA);
+        changes.Should().BeTrue();
+
+        string fullPathA = Path.Combine(dirA, "remote_file.txt");
+        File.Exists(fullPathA).Should().BeTrue();
+
+        // Verify physical disk timestamp matches manifest ModifiedUtc within 2.0s tolerance
+        var fi = new FileInfo(fullPathA);
+        Math.Abs((fi.LastWriteTimeUtc - pastModifiedUtc.UtcDateTime).TotalSeconds).Should().BeLessThanOrEqualTo(2.0);
+
+        var metaBeforeFlush = await storeA.GetFileAsync("remote_file.txt");
+        metaBeforeFlush.Should().NotBeNull();
+        int versionBefore = metaBeforeFlush!.Version;
+
+        // Act 2: Run watcher FlushAsync
+        await watcherA.FlushAsync();
+
+        // Assert: Verify that needsIngest is false and no re-ingest/version bump occurred
+        var metaAfterFlush = await storeA.GetFileAsync("remote_file.txt");
+        metaAfterFlush.Should().NotBeNull();
+        metaAfterFlush!.Version.Should().Be(versionBefore, "FlushAsync should not re-ingest the file when mtime matches");
+        metaAfterFlush.Clock.Should().BeEquivalentTo(metaBeforeFlush.Clock);
+    }
 }
