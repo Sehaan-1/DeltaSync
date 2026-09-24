@@ -180,4 +180,66 @@ public class PeerRegistryTests
 
         recovered.State.Should().Be(PeerState.Discovered);
     }
+
+    [Fact]
+    public void RegisterOrUpdateBeacon_DeadPeerSendsBeacon_ResurrectsToDiscoveredAndIncrementsActiveCount()
+    {
+        var registry = new PeerRegistry();
+        var hash = BeaconFrame.ComputePeerIdHash("peer-phoenix");
+        var frame = new BeaconFrame(_clusterId, hash, 5005, 1, 1000);
+        var beacon = new DiscoveredBeacon(frame, new IPEndPoint(IPAddress.Loopback, 58732));
+
+        registry.RegisterOrUpdateBeacon(beacon, "peer-phoenix", out _);
+        registry.ActiveCount.Should().Be(1);
+
+        // Mark Dead without evicting
+        bool marked = registry.MarkDead("peer-phoenix", evict: false, out var deadPeer);
+        marked.Should().BeTrue();
+        deadPeer!.State.Should().Be(PeerState.Dead);
+        registry.ActiveCount.Should().Be(0);
+
+        PeerRecord? discoveredArg = null;
+        registry.PeerDiscovered += (_, p) => discoveredArg = p;
+
+        // Ingest new beacon from the dead peer
+        var nextFrame = new BeaconFrame(_clusterId, hash, 5005, 2, 2000);
+        var nextBeacon = new DiscoveredBeacon(nextFrame, new IPEndPoint(IPAddress.Loopback, 58732));
+
+        bool isDiscovered = registry.RegisterOrUpdateBeacon(nextBeacon, "peer-phoenix", out var resurrected);
+
+        isDiscovered.Should().BeTrue();
+        resurrected.State.Should().Be(PeerState.Discovered);
+        registry.ActiveCount.Should().Be(1);
+        discoveredArg.Should().NotBeNull();
+        discoveredArg!.PeerId.Should().Be("peer-phoenix");
+        discoveredArg.State.Should().Be(PeerState.Discovered);
+    }
+
+    [Fact]
+    public void RegisterOrUpdateStatic_DeadPeerReappears_ResurrectsToDiscoveredAndIncrementsActiveCount()
+    {
+        var registry = new PeerRegistry();
+        var endpoint = new IPEndPoint(IPAddress.Parse("10.0.0.99"), 7000);
+
+        registry.RegisterOrUpdateStatic("static-phoenix", endpoint, out _);
+        registry.ActiveCount.Should().Be(1);
+
+        // Mark Dead without evicting
+        bool marked = registry.MarkDead("static-phoenix", evict: false, out var deadPeer);
+        marked.Should().BeTrue();
+        deadPeer!.State.Should().Be(PeerState.Dead);
+        registry.ActiveCount.Should().Be(0);
+
+        PeerRecord? discoveredArg = null;
+        registry.PeerDiscovered += (_, p) => discoveredArg = p;
+
+        // Static registration reappears/refreshes
+        bool isDiscovered = registry.RegisterOrUpdateStatic("static-phoenix", endpoint, out var resurrected);
+
+        isDiscovered.Should().BeTrue();
+        resurrected.State.Should().Be(PeerState.Discovered);
+        registry.ActiveCount.Should().Be(1);
+        discoveredArg.Should().NotBeNull();
+        discoveredArg!.PeerId.Should().Be("static-phoenix");
+    }
 }

@@ -77,7 +77,6 @@ public sealed class PeerRegistry
         var now = _timeProvider.GetUtcNow();
 
         PeerRecord? discoveredNew = null;
-        PeerRecord? stateRestored = null;
 
         lock (_syncRoot)
         {
@@ -93,11 +92,16 @@ public sealed class PeerRegistry
                     existing.LastSequence = beacon.Frame.Sequence;
                 }
 
-                // If peer was previously Stale, restore to Discovered
-                if (existing.State == PeerState.Stale)
+                // If peer was previously Stale or Dead, restore to Discovered
+                if (existing.State == PeerState.Stale || existing.State == PeerState.Dead)
                 {
+                    bool wasDead = existing.State == PeerState.Dead;
                     existing.State = PeerState.Discovered;
-                    stateRestored = existing.Snapshot();
+                    if (wasDead)
+                    {
+                        Interlocked.Increment(ref _activeCount);
+                        discoveredNew = existing.Snapshot();
+                    }
                 }
 
                 // Associate known canonical PeerId if supplied and not set
@@ -168,6 +172,18 @@ public sealed class PeerRegistry
             {
                 existing.LastSeen = now;
                 existing.Endpoint = endpoint;
+
+                if (existing.State == PeerState.Stale || existing.State == PeerState.Dead)
+                {
+                    bool wasDead = existing.State == PeerState.Dead;
+                    existing.State = PeerState.Discovered;
+                    if (wasDead)
+                    {
+                        Interlocked.Increment(ref _activeCount);
+                        discoveredNew = existing.Snapshot();
+                    }
+                }
+
                 peer = existing.Snapshot();
             }
             else
