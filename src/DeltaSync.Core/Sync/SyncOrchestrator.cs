@@ -105,7 +105,8 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         _runCts = new CancellationTokenSource();
 
         // 1. Crash recovery: sweep any abandoned .tmp files in staging directories
-        CleanupStagingFiles();
+        // H-06: on startup, only sweep files older than 60s to avoid clobbering active transfers
+        CleanupStagingFiles(TimeSpan.FromSeconds(60));
 
         // 2. Wire local file watcher events
         if (_watcherService != null)
@@ -359,10 +360,15 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    public int CleanupStagingFiles()
+    public int CleanupStagingFiles() => CleanupStagingFiles(null);
+
+    public int CleanupStagingFiles(TimeSpan? olderThan)
     {
         int deletedCount = 0;
         var directoriesToSweep = new[] { _stagingDirectory, _tmpDirectory };
+        var cutoff = olderThan.HasValue && olderThan.Value > TimeSpan.Zero
+            ? DateTime.UtcNow - olderThan.Value
+            : DateTime.MaxValue;
 
         foreach (var dir in directoriesToSweep)
         {
@@ -376,9 +382,9 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                 var dirInfo = new DirectoryInfo(dir);
                 foreach (var file in dirInfo.EnumerateFiles("*.tmp", SearchOption.AllDirectories))
                 {
-                    // H-06 fix: only delete files older than 60 s — avoids clobbering an in-progress
-                    // transfer from a second DeltaSync instance sharing the same sync root.
-                    if (file.LastWriteTimeUtc >= DateTime.UtcNow.AddSeconds(-60))
+                    // H-06 fix: when an age threshold is provided (such as on startup), only delete
+                    // files older than the threshold to avoid clobbering an active concurrent transfer.
+                    if (file.LastWriteTimeUtc > cutoff)
                         continue;
                     try
                     {

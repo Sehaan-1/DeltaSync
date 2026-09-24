@@ -241,7 +241,9 @@ public class DeltaReconstructorTests : IDisposable
         localProvider.AddChunk(manifest.Chunks[0].HashHex, payload);
         var remoteSource = new MemoryRemoteChunkSource();
 
+#pragma warning disable CS0618
         var result = DeltaReconstructor.Reconstruct(manifest, destPath, localProvider, remoteSource);
+#pragma warning restore CS0618
 
         Assert.True(File.Exists(destPath));
         Assert.Equal(payload, File.ReadAllBytes(destPath));
