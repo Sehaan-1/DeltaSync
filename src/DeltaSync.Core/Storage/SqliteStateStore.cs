@@ -275,8 +275,41 @@ public sealed class SqliteStateStore : ISqliteStateStore
         var localHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        // M-02 fix: use a session-scoped temp table instead of a dynamic 500-param IN clause.
-        // SQLite can prepare the INSERT and SELECT once, avoiding re-parse/re-plan on every batch.
+        // For small probe sets (<= 16), perform a direct read query to avoid temp table and transaction overhead for concurrent readers.
+        if (uniqueHashes.Count <= 16)
+        {
+            await using var selectDirectCmd = connection.CreateCommand();
+            if (uniqueHashes.Count == 1)
+            {
+                string singleHash = uniqueHashes.First();
+                selectDirectCmd.CommandText = "SELECT chunk_hash FROM chunks WHERE chunk_hash = $h0;";
+                selectDirectCmd.Parameters.AddWithValue("$h0", singleHash);
+            }
+            else
+            {
+                var paramNames = new string[uniqueHashes.Count];
+                int idx = 0;
+                foreach (var h in uniqueHashes)
+                {
+                    string pName = "$h" + idx;
+                    paramNames[idx++] = pName;
+                    selectDirectCmd.Parameters.AddWithValue(pName, h);
+                }
+                selectDirectCmd.CommandText = $"SELECT chunk_hash FROM chunks WHERE chunk_hash IN ({string.Join(',', paramNames)});";
+            }
+
+            await using var reader = await selectDirectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                localHashes.Add(reader.GetString(0));
+            }
+
+            var missingDirect = new HashSet<string>(uniqueHashes.Except(localHashes, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+            return new ChunkProbeResult(localHashes, missingDirect);
+        }
+
+        // M-02 fix: for large probe sets (> 16), use a session-scoped temp table populated in a single transaction
+        // instead of a massive dynamic IN clause. SQLite prepares the INSERT and SELECT once.
         await using (var createTmp = connection.CreateCommand())
         {
             createTmp.CommandText = "CREATE TEMP TABLE IF NOT EXISTS _probe_hashes (hash TEXT PRIMARY KEY NOT NULL);";
