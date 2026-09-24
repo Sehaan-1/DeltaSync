@@ -298,65 +298,30 @@ public sealed class SqliteStateStore : ISqliteStateStore
                 selectDirectCmd.CommandText = $"SELECT chunk_hash FROM chunks WHERE chunk_hash IN ({string.Join(',', paramNames)});";
             }
 
-            await using var reader = await selectDirectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            await using var directReader = await selectDirectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await directReader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                localHashes.Add(reader.GetString(0));
+                localHashes.Add(directReader.GetString(0));
             }
 
             var missingDirect = new HashSet<string>(uniqueHashes.Except(localHashes, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
             return new ChunkProbeResult(localHashes, missingDirect);
         }
 
-        // M-02 fix: for large probe sets (> 16), use a session-scoped temp table populated in a single transaction
-        // instead of a massive dynamic IN clause. SQLite prepares the INSERT and SELECT once.
-        await using (var createTmp = connection.CreateCommand())
+        // Engine 4 fix (closes #32): for probe sets (> 16), join directly with SQLite's native json_each table-valued function.
+        // This eliminates temporary table DDL, write lock contention, and multi-statement P/Invoke serialization overhead.
+        string json = JsonSerializer.Serialize(uniqueHashes);
+        await using var selectCmd = connection.CreateCommand();
+        selectCmd.CommandText = @"
+            SELECT c.chunk_hash
+            FROM chunks c
+            INNER JOIN json_each($json) j ON c.chunk_hash = j.value;";
+        selectCmd.Parameters.AddWithValue("$json", json);
+
+        await using var jsonReader = await selectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await jsonReader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            createTmp.CommandText = "CREATE TEMP TABLE IF NOT EXISTS _probe_hashes (hash TEXT PRIMARY KEY NOT NULL);";
-            await createTmp.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        try
-        {
-            // Populate the temp table with all hashes to probe within an explicit single transaction
-            await using var tx = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-            await using var insertCmd = connection.CreateCommand();
-            insertCmd.Transaction = (SqliteTransaction)tx;
-            insertCmd.CommandText = "INSERT OR IGNORE INTO _probe_hashes (hash) VALUES ($h);";
-            var pInsert = insertCmd.Parameters.Add("$h", SqliteType.Text);
-
-            foreach (var hash in uniqueHashes)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                pInsert.Value = hash;
-                await insertCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-            // Single JOIN query to find which hashes already exist in the chunk store
-            await using var selectCmd = connection.CreateCommand();
-            selectCmd.CommandText = @"
-                SELECT c.chunk_hash
-                FROM chunks c
-                INNER JOIN _probe_hashes p ON c.chunk_hash = p.hash;";
-
-            await using var reader = await selectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                localHashes.Add(reader.GetString(0));
-            }
-        }
-        finally
-        {
-            // Clean up temp table so it doesn't persist across calls on a pooled connection
-            try
-            {
-                await using var dropTmp = connection.CreateCommand();
-                dropTmp.CommandText = "DROP TABLE IF EXISTS _probe_hashes;";
-                await dropTmp.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch { /* best-effort cleanup */ }
+            localHashes.Add(jsonReader.GetString(0));
         }
 
         var missingHashes = new HashSet<string>(uniqueHashes.Except(localHashes, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);

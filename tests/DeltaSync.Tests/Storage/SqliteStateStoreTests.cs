@@ -894,6 +894,6 @@ public sealed class SqliteStateStoreTests : IDisposable
         // Assert
         result.LocalCount.Should().Be(500); // 500..999 are present
         result.MissingCount.Should().Be(4500); // 1000..5499 are missing
-        sw.ElapsedMilliseconds.Should().BeLessThan(250, "5,000 chunk probe with single transaction must be fast and unblocked");
+        sw.ElapsedMilliseconds.Should().BeLessThan(50, "Spec §10 Check 2 requires 5,000 chunk probe latency < 50 ms");
     }
 }
