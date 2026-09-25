@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "0.1.0",
+  "name": "Karpathy LLM Wiki Raw Clip",
+  "behavior": "create",
+  "noteNameFormat": "{{title}}",
+  "path": "raw",
+  "noteContentFormat": "---\ntitle: \"{{title}}\"\nsource: \"{{url}}\"\nauthor: \"{{author}}\"\ndate_clipped: \"{{date}}\"\npublished: \"{{published}}\"\ntags: [raw-source, clip]\n---\n\n# {{title}}\n\n> Source: [{{title}}]({{url}})\n\n{{content}}\n"
+}

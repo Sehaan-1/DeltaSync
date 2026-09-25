@@ -46,3 +46,13 @@ docs/cuecards/
 docs/lanes/
 docs/siegecraft/
 
+## Karpathy LLM Wiki — always local, never pushed
+raw/
+wiki/
+outputs/
+index.md
+log.md
+CLAUDE.md
+AGENTS.md
+scripts/
+
