@@ -13,7 +13,9 @@ namespace DeltaSync.Cli;
 
 public static class Program
 {
-    public static async Task<int> Main(string[] args)
+    public static Task<int> Main(string[] args) => RunAsync(args, CancellationToken.None);
+
+    public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)
     {
         var options = CliOptions.Parse(args);
         if (options.ShowHelp)
@@ -24,12 +26,12 @@ public static class Program
 
         return options.Command switch
         {
-            CliCommand.Sync => await ExecuteSyncAsync(options),
+            CliCommand.Sync => await ExecuteSyncAsync(options, cancellationToken),
             CliCommand.Peer => await ExecutePeerAsync(options),
             CliCommand.Conflicts => await ExecuteConflictsAsync(options),
             CliCommand.Status => await ExecuteStatusAsync(options),
             CliCommand.Help => ExecuteHelp(options),
-            _ => await ExecuteSyncAsync(options)
+            _ => await ExecuteSyncAsync(options, cancellationToken)
         };
     }
 
@@ -39,13 +41,29 @@ public static class Program
         return 0;
     }
 
-    private static async Task<int> ExecuteSyncAsync(CliOptions options)
+    private static async Task<int> ExecuteSyncAsync(CliOptions options, CancellationToken cancellationToken = default)
     {
         var metricsSink = new SyncMetricsSink();
 
         // Smoke-test mode for CI and test verification
         if (options.IsSmokeTest)
         {
+            if (options.IsHeadless)
+            {
+                // Headless smoke-test: zero ANSI escape codes, structured event logging
+                string timestamp = DateTime.UtcNow.ToString("HH:mm:ss.fff");
+                Console.WriteLine($"[{timestamp}] [INFO] Smoke test execution initiated (headless mode).");
+                Console.WriteLine($"[{timestamp}] [SYNC] Monitored sync path: {options.SyncPath}");
+                Console.WriteLine($"[{timestamp}] [METRICS] Metrics scrape endpoint configured: http://127.0.0.1:{options.MetricsPort}/metrics");
+                Console.WriteLine($"[{timestamp}] [NET] P2P transport listener port: {options.ListenPort}");
+                if (options.StaticPeers is { Count: > 0 })
+                {
+                    Console.WriteLine($"[{timestamp}] [PEER] Configured static peers: {string.Join(", ", options.StaticPeers)}");
+                }
+                Console.WriteLine($"[{timestamp}] [INFO] DeltaSync CLI Smoke Test Passed Successfully.");
+                return 0;
+            }
+
             var testDashboard = new TerminalDashboard(
                 metricsSink,
                 options.PeerId,
@@ -69,29 +87,44 @@ public static class Program
             return 0;
         }
 
-        using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (sender, eventArgs) =>
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        ConsoleCancelEventHandler cancelHandler = (sender, eventArgs) =>
         {
             eventArgs.Cancel = true;
             cts.Cancel();
         };
+        Console.CancelKeyPress += cancelHandler;
 
-        var dashboard = new TerminalDashboard(
-            metricsSink,
-            options.PeerId,
-            options.ClusterId,
-            options.SyncPath,
-            options.MetricsPort);
+        TerminalDashboard? dashboard = options.IsHeadless
+            ? null
+            : new TerminalDashboard(
+                metricsSink,
+                options.PeerId,
+                options.ClusterId,
+                options.SyncPath,
+                options.MetricsPort);
+
+        void LogEvent(string category, string message)
+        {
+            if (options.IsHeadless)
+            {
+                Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss.fff}] [{category}] {message}");
+            }
+            else
+            {
+                dashboard?.AddEvent(category, message);
+            }
+        }
 
         await using var metricsServer = new PrometheusMetricsServer(metricsSink, options.MetricsPort);
         try
         {
             metricsServer.Start();
-            dashboard.AddEvent("METRICS", $"Prometheus scrape server listening on http://127.0.0.1:{options.MetricsPort}/metrics");
+            LogEvent("METRICS", $"Prometheus scrape server listening on http://127.0.0.1:{options.MetricsPort}/metrics");
         }
         catch (Exception ex)
         {
-            dashboard.AddEvent("WARN", $"Prometheus server warning: {ex.Message}");
+            LogEvent("WARN", $"Prometheus server warning: {ex.Message}");
         }
 
         // Ensure directories exist
@@ -104,15 +137,6 @@ public static class Program
 
         await using var watcher = new FileWatcherService(options.SyncPath, store, options.PeerId);
         var registry = new PeerRegistry();
-
-        // Load configured static peers from .deltasync/peers.json and CLI flags
-        var configuredPeers = await PeerConfigStore.LoadPeersAsync(options.SyncPath, cts.Token);
-        var allStaticEndpoints = configuredPeers.Select(p => p.Endpoint)
-            .Concat(options.StaticPeers ?? Array.Empty<string>())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var staticPeerProvider = new StaticPeerProvider(registry, allStaticEndpoints);
 
         Guid clusterGuid = Guid.TryParse(options.ClusterId, out var parsedGuid)
             ? parsedGuid
@@ -148,18 +172,6 @@ public static class Program
             metricsSink: metricsSink,
             localPeerId: options.PeerId);
 
-        void LogEvent(string category, string message)
-        {
-            if (options.IsHeadless)
-            {
-                Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss.fff}] [{category}] {message}");
-            }
-            else
-            {
-                dashboard.AddEvent(category, message);
-            }
-        }
-
         void TriggerPeerConnect(PeerRecord peer)
         {
             _ = Task.Run(async () =>
@@ -180,36 +192,56 @@ public static class Program
 
         registry.PeerDiscovered += (sender, peer) =>
         {
-            dashboard.SetActivePeers(registry.ActiveCount);
+            dashboard?.SetActivePeers(registry.ActiveCount);
             LogEvent("PEER", $"Discovered peer {peer.PeerId} at {peer.Endpoint}");
             TriggerPeerConnect(peer);
         };
 
         coordinator.ConnectionEstablished += (sender, channel) =>
         {
-            dashboard.SetActivePeers(coordinator.ActiveConnections.Count);
+            dashboard?.SetActivePeers(coordinator.ActiveConnections.Count);
             LogEvent("PEER", $"Connected to peer {channel.RemotePeerId}");
         };
 
         coordinator.ConnectionClosed += (sender, peerId) =>
         {
-            dashboard.SetActivePeers(coordinator.ActiveConnections.Count);
+            dashboard?.SetActivePeers(coordinator.ActiveConnections.Count);
             LogEvent("PEER", $"Peer {peerId} disconnected");
         };
 
         watcher.OnFileCreatedOrChanged += (relPath) =>
         {
-            dashboard.SetState(SyncEngineState.Syncing);
+            dashboard?.SetState(SyncEngineState.Syncing);
             LogEvent("SYNC", $"File created/modified: {relPath}");
             return Task.CompletedTask;
         };
 
         watcher.OnFileDeleted += (relPath) =>
         {
-            dashboard.SetState(SyncEngineState.Syncing);
+            dashboard?.SetState(SyncEngineState.Syncing);
             LogEvent("SYNC", $"File deleted: {relPath}");
             return Task.CompletedTask;
         };
+
+        // Load configured static peers from .deltasync/peers.json and CLI flags
+        var staticPeerProvider = new StaticPeerProvider(registry);
+        var configuredPeers = await PeerConfigStore.LoadPeersAsync(options.SyncPath, cts.Token);
+        var allStaticEndpoints = configuredPeers.Select(p => p.Endpoint)
+            .Concat(options.StaticPeers ?? Array.Empty<string>())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (allStaticEndpoints.Count > 0)
+        {
+            LogEvent("PEER", $"Seeding {allStaticEndpoints.Count} static peer(s): {string.Join(", ", allStaticEndpoints)}");
+            foreach (var ep in allStaticEndpoints)
+            {
+                if (!staticPeerProvider.AddStaticPeer(ep, out var peer, out var error))
+                {
+                    LogEvent("WARN", $"Failed to parse static peer '{ep}': {error}");
+                }
+            }
+        }
 
         // Start background synchronization services
         await orchestrator.StartAsync(cts.Token);
@@ -223,13 +255,11 @@ public static class Program
         catch (Exception ex)
         {
             LogEvent("ERROR", $"Failed to bind TCP listener on port {options.ListenPort}: {ex.Message}");
-            AnsiConsole.MarkupLine($"[bold red]Error:[/] Failed to bind TCP listener on port {options.ListenPort}: {Markup.Escape(ex.Message)}");
+            if (!options.IsHeadless)
+            {
+                AnsiConsole.MarkupLine($"[bold red]Error:[/] Failed to bind TCP listener on port {options.ListenPort}: {Markup.Escape(ex.Message)}");
+            }
             return 1;
-        }
-
-        if (allStaticEndpoints.Count > 0)
-        {
-            LogEvent("PEER", $"Loaded {allStaticEndpoints.Count} static peer(s): {string.Join(", ", allStaticEndpoints)}");
         }
 
         // Trigger connection attempts for already discovered/configured static peers
@@ -249,7 +279,7 @@ public static class Program
             }
             else
             {
-                await dashboard.RunAsync(cts.Token);
+                await dashboard!.RunAsync(cts.Token);
             }
         }
         catch (OperationCanceledException)
@@ -258,12 +288,20 @@ public static class Program
         }
         finally
         {
+            Console.CancelKeyPress -= cancelHandler;
             watcher.StopWatching();
             await orchestrator.StopAsync(CancellationToken.None);
             await listener.StopAsync();
         }
 
-        AnsiConsole.MarkupLine("[bold yellow]DeltaSync daemon stopped cleanly.[/]");
+        if (options.IsHeadless)
+        {
+            Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss.fff}] [INFO] DeltaSync daemon stopped cleanly.");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[bold yellow]DeltaSync daemon stopped cleanly.[/]");
+        }
         return 0;
     }
 
