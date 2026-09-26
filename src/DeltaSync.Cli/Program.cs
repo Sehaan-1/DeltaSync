@@ -118,11 +118,20 @@ public static class Program
             ? parsedGuid
             : new Guid(MD5.HashData(Encoding.UTF8.GetBytes(options.ClusterId)));
 
+        var dialer = new TcpPeerDialer(clusterGuid, options.PeerId, registry);
+
         await using var coordinator = new PeerConnectionCoordinator(
             clusterGuid,
             options.PeerId,
             options.ListenPort,
-            registry);
+            registry,
+            dialer: dialer.AsDialer());
+
+        await using var listener = new TcpPeerListener(
+            options.PeerId,
+            clusterGuid,
+            options.ListenPort,
+            coordinator);
 
         var wireProtocol = new SyncWireProtocol(
             store,
@@ -151,10 +160,29 @@ public static class Program
             }
         }
 
+        void TriggerPeerConnect(PeerRecord peer)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await coordinator.ConnectAsync(peer.PeerId, peer.Endpoint, cts.Token);
+                }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                }
+                catch (Exception ex)
+                {
+                    LogEvent("WARN", $"Failed to connect to peer {peer.PeerId} at {peer.Endpoint}: {ex.Message}");
+                }
+            });
+        }
+
         registry.PeerDiscovered += (sender, peer) =>
         {
             dashboard.SetActivePeers(registry.ActiveCount);
             LogEvent("PEER", $"Discovered peer {peer.PeerId} at {peer.Endpoint}");
+            TriggerPeerConnect(peer);
         };
 
         coordinator.ConnectionEstablished += (sender, channel) =>
@@ -187,12 +215,30 @@ public static class Program
         await orchestrator.StartAsync(cts.Token);
         watcher.StartWatching();
 
+        try
+        {
+            listener.Start();
+            LogEvent("NET", $"TCP peer transport listener active on {listener.LocalEndPoint}");
+        }
+        catch (Exception ex)
+        {
+            LogEvent("ERROR", $"Failed to bind TCP listener on port {options.ListenPort}: {ex.Message}");
+            AnsiConsole.MarkupLine($"[bold red]Error:[/] Failed to bind TCP listener on port {options.ListenPort}: {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+
         if (allStaticEndpoints.Count > 0)
         {
             LogEvent("PEER", $"Loaded {allStaticEndpoints.Count} static peer(s): {string.Join(", ", allStaticEndpoints)}");
         }
 
-        LogEvent("INFO", $"DeltaSync active. Monitoring '{options.SyncPath}' on port {options.ListenPort}.");
+        // Trigger connection attempts for already discovered/configured static peers
+        foreach (var staticPeer in registry.GetActivePeers())
+        {
+            TriggerPeerConnect(staticPeer);
+        }
+
+        LogEvent("INFO", $"DeltaSync active. Monitoring '{options.SyncPath}' on port {listener.Port}.");
 
         // Run live dashboard or headless loop
         try
@@ -214,6 +260,7 @@ public static class Program
         {
             watcher.StopWatching();
             await orchestrator.StopAsync(CancellationToken.None);
+            await listener.StopAsync();
         }
 
         AnsiConsole.MarkupLine("[bold yellow]DeltaSync daemon stopped cleanly.[/]");
