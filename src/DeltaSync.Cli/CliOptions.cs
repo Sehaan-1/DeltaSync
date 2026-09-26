@@ -159,6 +159,52 @@ public sealed record CliOptions(
         for (; index < args.Length; index++)
         {
             string arg = args[index];
+
+            if (arg.StartsWith("--peer=", StringComparison.OrdinalIgnoreCase))
+            {
+                string raw = arg[7..];
+                foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    staticPeers.Add(part);
+                }
+                continue;
+            }
+            if (arg.StartsWith("--static-peer=", StringComparison.OrdinalIgnoreCase))
+            {
+                string raw = arg[14..];
+                foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    staticPeers.Add(part);
+                }
+                continue;
+            }
+            if (arg.StartsWith("--path=", StringComparison.OrdinalIgnoreCase))
+            {
+                syncPath = Path.GetFullPath(arg[7..]);
+                continue;
+            }
+            if (arg.StartsWith("--port=", StringComparison.OrdinalIgnoreCase) && int.TryParse(arg[7..], out int pVal))
+            {
+                listenPort = pVal;
+                continue;
+            }
+            if (arg.StartsWith("--metrics-port=", StringComparison.OrdinalIgnoreCase) && int.TryParse(arg[15..], out int mpVal))
+            {
+                metricsPort = mpVal;
+                continue;
+            }
+            if (arg.StartsWith("--peer-id=", StringComparison.OrdinalIgnoreCase) || arg.StartsWith("--node-id=", StringComparison.OrdinalIgnoreCase))
+            {
+                int eqIdx = arg.IndexOf('=');
+                peerId = arg[(eqIdx + 1)..];
+                continue;
+            }
+            if (arg.StartsWith("--cluster=", StringComparison.OrdinalIgnoreCase))
+            {
+                clusterId = arg[10..];
+                continue;
+            }
+
             switch (arg.ToLowerInvariant())
             {
                 case "--path":
@@ -196,7 +242,11 @@ public sealed record CliOptions(
                 case "--static-peer":
                     if (index + 1 < args.Length)
                     {
-                        staticPeers.Add(args[++index]);
+                        string raw = args[++index];
+                        foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        {
+                            staticPeers.Add(part);
+                        }
                     }
                     break;
                 case "--address":
