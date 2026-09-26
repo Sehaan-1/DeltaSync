@@ -40,6 +40,7 @@ public sealed class PeerConnectionCoordinator : IPeerConnectionCoordinator
         {
             lock (_syncRoot)
             {
+                PruneDisconnected();
                 return _activeConnections.Values.ToList();
             }
         }
@@ -73,6 +74,7 @@ public sealed class PeerConnectionCoordinator : IPeerConnectionCoordinator
 
         lock (_syncRoot)
         {
+            PruneDisconnected();
             if (_activeConnections.TryGetValue(peerId, out var existing) && existing.IsConnected)
             {
                 channel = existing;
@@ -82,6 +84,31 @@ public sealed class PeerConnectionCoordinator : IPeerConnectionCoordinator
 
         channel = null;
         return false;
+    }
+
+    private void PruneDisconnected()
+    {
+        List<string>? toRemove = null;
+        foreach (var (peerId, conn) in _activeConnections)
+        {
+            if (!conn.IsConnected)
+            {
+                toRemove ??= new List<string>();
+                toRemove.Add(peerId);
+            }
+        }
+
+        if (toRemove is not null)
+        {
+            foreach (var peerId in toRemove)
+            {
+                if (_activeConnections.Remove(peerId, out var conn))
+                {
+                    conn.Dispose();
+                    ConnectionClosed?.Invoke(this, peerId);
+                }
+            }
+        }
     }
 
     public async Task<IPeerTransportChannel?> ConnectAsync(
@@ -357,6 +384,11 @@ public sealed class PeerConnectionCoordinator : IPeerConnectionCoordinator
         // Step 6: Acknowledge successful handshake and register canonical channel
         var successResp = HandshakeResponse.CreateSuccess(ClusterId, LocalPeerId);
         await channel.SendAsync(successResp.ToByteArray(), ct).ConfigureAwait(false);
+
+        if (channel is TcpTransportChannel tcpChan && string.IsNullOrEmpty(tcpChan.RemotePeerId))
+        {
+            tcpChan.RemotePeerId = request.PeerId;
+        }
 
         lock (_syncRoot)
         {
