@@ -33,7 +33,8 @@ public sealed record CliOptions(
     string? PeerTarget = null,
     IReadOnlyList<string>? StaticPeers = null,
     bool IsHeadless = false,
-    bool JsonOutput = false)
+    bool JsonOutput = false,
+    int DebounceMs = 500)
 {
     public static CliOptions Parse(string[] args)
     {
@@ -50,6 +51,7 @@ public sealed record CliOptions(
         var staticPeers = new List<string>();
         bool isHeadless = false;
         bool jsonOutput = false;
+        int debounceMs = 500;
 
         if (args.Length == 0)
         {
@@ -67,7 +69,8 @@ public sealed record CliOptions(
                 PeerTarget: peerTarget,
                 StaticPeers: staticPeers,
                 IsHeadless: isHeadless,
-                JsonOutput: jsonOutput);
+                JsonOutput: jsonOutput,
+                DebounceMs: debounceMs);
         }
 
         int index = 0;
@@ -205,12 +208,24 @@ public sealed record CliOptions(
                 continue;
             }
 
+            if (arg.StartsWith("--debounce-ms=", StringComparison.OrdinalIgnoreCase) && int.TryParse(arg[14..], out int dbVal))
+            {
+                debounceMs = dbVal;
+                continue;
+            }
+
             switch (arg.ToLowerInvariant())
             {
                 case "--path":
                     if (index + 1 < args.Length)
                     {
                         syncPath = Path.GetFullPath(args[++index]);
+                    }
+                    break;
+                case "--debounce-ms":
+                    if (index + 1 < args.Length && int.TryParse(args[++index], out int db))
+                    {
+                        debounceMs = db;
                     }
                     break;
                 case "--port":
@@ -292,6 +307,7 @@ public sealed record CliOptions(
             PeerTarget: peerTarget,
             StaticPeers: staticPeers,
             IsHeadless: isHeadless,
-            JsonOutput: jsonOutput);
+            JsonOutput: jsonOutput,
+            DebounceMs: debounceMs);
     }
 }

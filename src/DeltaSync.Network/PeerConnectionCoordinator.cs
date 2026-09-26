@@ -211,6 +211,11 @@ public sealed class PeerConnectionCoordinator : IPeerConnectionCoordinator
             }
 
             // Step 4: Finalize active canonical connection
+            if (channel is TcpTransportChannel tcpChan && !string.IsNullOrWhiteSpace(response.PeerId))
+            {
+                tcpChan.RemotePeerId = response.PeerId;
+            }
+
             lock (_syncRoot)
             {
                 if (_activeConnections.TryGetValue(remotePeerId, out var active) && active.IsConnected)
@@ -222,6 +227,10 @@ public sealed class PeerConnectionCoordinator : IPeerConnectionCoordinator
                 }
 
                 _activeConnections[remotePeerId] = channel;
+                if (!string.IsNullOrWhiteSpace(response.PeerId) && !string.Equals(remotePeerId, response.PeerId, StringComparison.Ordinal))
+                {
+                    _activeConnections[response.PeerId] = channel;
+                }
                 _inFlightDials.Remove(remotePeerId);
             }
 
@@ -231,6 +240,16 @@ public sealed class PeerConnectionCoordinator : IPeerConnectionCoordinator
                 Registry.RegisterOrUpdateStatic(remotePeerId, ep, out _);
             }
             Registry.MarkConnected(remotePeerId, out _);
+
+            if (!string.IsNullOrWhiteSpace(response.PeerId) && !string.Equals(remotePeerId, response.PeerId, StringComparison.Ordinal))
+            {
+                if (!Registry.TryGetPeer(response.PeerId, out _))
+                {
+                    Registry.RegisterOrUpdateStatic(response.PeerId, ep, out _);
+                }
+                Registry.MarkConnected(response.PeerId, out _);
+            }
+
             ConnectionEstablished?.Invoke(this, channel);
             inFlight.Complete(channel);
             return channel;
