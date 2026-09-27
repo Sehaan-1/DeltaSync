@@ -74,4 +74,14 @@ public interface ISyncWireProtocol : IAsyncDisposable, IDisposable
         string destinationFilePath,
         string? tempDirectory = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Transmits a non-blocking SyncCompletedNotice to the remote peer to trigger peer-side reconciliation.
+    /// </summary>
+    Task NotifySyncCompletedAsync(IPeerTransportChannel channel, CancellationToken ct = default);
+
+    /// <summary>
+    /// Raised when a remote peer sends a SyncCompletedNotice requesting reconciliation.
+    /// </summary>
+    event Func<IPeerTransportChannel, Task>? SyncNoticeReceived;
 }

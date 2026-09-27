@@ -4,12 +4,14 @@ using Xunit;
 
 namespace DeltaSync.Tests.Sync;
 
+[Collection("ConsoleTests")]
 public class StructuredCliCommandTests : IDisposable
 {
     private readonly string _testDir;
 
     public StructuredCliCommandTests()
     {
+        Spectre.Console.AnsiConsole.Console = Spectre.Console.AnsiConsole.Create(new Spectre.Console.AnsiConsoleSettings());
         _testDir = Path.Combine(Path.GetTempPath(), "deltasync_cli_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_testDir);
     }

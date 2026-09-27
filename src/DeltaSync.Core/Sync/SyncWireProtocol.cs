@@ -25,6 +25,8 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
     private long _correlationSeq;
     private int _isDisposed;
 
+    public event Func<IPeerTransportChannel, Task>? SyncNoticeReceived;
+
     public SyncWireProtocol(
         ISqliteStateStore stateStore,
         ILocalChunkProvider? localChunkProvider = null,
@@ -292,6 +294,30 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
         return result;
     }
 
+    public async Task NotifySyncCompletedAsync(IPeerTransportChannel channel, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) == 1, this);
+        ArgumentNullException.ThrowIfNull(channel);
+
+        if (!channel.IsConnected) return;
+
+        var session = GetOrAttachSession(channel);
+        ulong correlationId = (ulong)Interlocked.Increment(ref _correlationSeq);
+        var notice = new SyncCompletedNotice(channel.ClusterId, channel.LocalPeerId);
+        var frameBytes = SyncWireFrameSerializer.Serialize(SyncMessageType.SyncCompletedNotice, correlationId, notice);
+
+        await session.SendLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await channel.SendAsync(frameBytes, ct).ConfigureAwait(false);
+            _metricsSink.RecordBytesTransferred(frameBytes.Length, isOutgoing: true);
+        }
+        finally
+        {
+            session.SendLock.Release();
+        }
+    }
+
     private ChannelSession GetOrAttachSession(IPeerTransportChannel channel)
     {
         return _sessions.GetOrAdd(channel, ch =>
@@ -439,6 +465,10 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
                     break;
 
                 case SyncMessageType.SyncCompletedNotice:
+                    if (SyncNoticeReceived != null)
+                    {
+                        _ = SyncNoticeReceived.Invoke(session.Channel);
+                    }
                     break;
             }
         }

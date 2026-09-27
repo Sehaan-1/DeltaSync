@@ -4,10 +4,12 @@ using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using DeltaSync.Cli;
 using FluentAssertions;
+using Spectre.Console;
 using Xunit;
 
 namespace DeltaSync.Tests.Sync;
 
+[Collection("ConsoleTests")]
 public class CliHeadlessExecutionTests
 {
     private static readonly Regex AnsiRegex = new(@"\x1B\[[0-9;]*[a-zA-Z]", RegexOptions.Compiled);
@@ -43,6 +45,12 @@ public class CliHeadlessExecutionTests
         // 5. --peer=value syntax
         var optsEq = CliOptions.Parse(["--peer=127.0.0.1:9999", "--static-peer=127.0.0.1:9998"]);
         optsEq.StaticPeers.Should().BeEquivalentTo(new[] { "127.0.0.1:9999", "127.0.0.1:9998" });
+    }
+
+    private static void RestoreConsole(TextWriter originalOut)
+    {
+        Console.SetOut(originalOut);
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings());
     }
 
     [Fact]
@@ -83,7 +91,7 @@ public class CliHeadlessExecutionTests
         }
         finally
         {
-            Console.SetOut(originalOut);
+            RestoreConsole(originalOut);
         }
     }
 
@@ -114,7 +122,7 @@ public class CliHeadlessExecutionTests
         }
         finally
         {
-            Console.SetOut(originalOut);
+            RestoreConsole(originalOut);
         }
     }
 
@@ -139,7 +147,7 @@ public class CliHeadlessExecutionTests
         }
         finally
         {
-            Console.SetOut(originalOut);
+            RestoreConsole(originalOut);
         }
     }
 
@@ -223,7 +231,7 @@ public class CliHeadlessExecutionTests
         }
         finally
         {
-            Console.SetOut(originalOut);
+            RestoreConsole(originalOut);
             try
             {
                 if (Directory.Exists(tempDir))
@@ -274,7 +282,7 @@ public class CliHeadlessExecutionTests
         }
         finally
         {
-            Console.SetOut(originalOut);
+            RestoreConsole(originalOut);
             blocker.Stop();
             try
             {

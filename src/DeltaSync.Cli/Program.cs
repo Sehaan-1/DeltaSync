@@ -132,11 +132,22 @@ public static class Program
         string dbPath = Path.Combine(options.SyncPath, ".deltasync", "state.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
-        await using var store = new SqliteStateStore(dbPath);
+        var connectionFactory = new SqliteConnectionFactory(dbPath);
+        await using (var conn = await connectionFactory.OpenConnectionAsync(cts.Token))
+        {
+            await SqliteSchemaMigrator.MigrateAsync(conn, cts.Token);
+        }
+
+        await using var store = new SqliteStateStore(connectionFactory);
         var chunkProvider = new SqliteLocalChunkProvider(store, options.SyncPath);
 
-        await using var watcher = new FileWatcherService(options.SyncPath, store, options.PeerId);
+        await using var watcher = new FileWatcherService(
+            options.SyncPath,
+            store,
+            options.PeerId,
+            debounceWindow: TimeSpan.FromMilliseconds(options.DebounceMs));
         var registry = new PeerRegistry();
+        var staticPeerProvider = new StaticPeerProvider(registry);
 
         Guid clusterGuid = Guid.TryParse(options.ClusterId, out var parsedGuid)
             ? parsedGuid
@@ -176,16 +187,39 @@ public static class Program
         {
             _ = Task.Run(async () =>
             {
-                try
+                while (!cts.IsCancellationRequested)
                 {
-                    await coordinator.ConnectAsync(peer.PeerId, peer.Endpoint, cts.Token);
-                }
-                catch (OperationCanceledException) when (cts.IsCancellationRequested)
-                {
-                }
-                catch (Exception ex)
-                {
-                    LogEvent("WARN", $"Failed to connect to peer {peer.PeerId} at {peer.Endpoint}: {ex.Message}");
+                    try
+                    {
+                        var channel = await coordinator.ConnectAsync(peer.PeerId, peer.Endpoint, cts.Token);
+                        if (channel != null && channel.IsConnected)
+                        {
+                            return;
+                        }
+                    }
+                    catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        LogEvent("WARN", $"Failed to connect to peer {peer.PeerId} at {peer.Endpoint}: {ex.Message}");
+                    }
+
+                    if (!peer.IsStatic)
+                    {
+                        return;
+                    }
+
+                    var delay = staticPeerProvider.GetNextRetryDelay(peer.PeerId);
+                    try
+                    {
+                        await Task.Delay(delay, cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
                 }
             });
         }
@@ -207,6 +241,10 @@ public static class Program
         {
             dashboard?.SetActivePeers(coordinator.ActiveConnections.Count);
             LogEvent("PEER", $"Peer {peerId} disconnected");
+            if (registry.TryGetPeer(peerId, out var p) && p.IsStatic)
+            {
+                TriggerPeerConnect(p);
+            }
         };
 
         watcher.OnFileCreatedOrChanged += (relPath) =>
@@ -224,7 +262,6 @@ public static class Program
         };
 
         // Load configured static peers from .deltasync/peers.json and CLI flags
-        var staticPeerProvider = new StaticPeerProvider(registry);
         var configuredPeers = await PeerConfigStore.LoadPeersAsync(options.SyncPath, cts.Token);
         var allStaticEndpoints = configuredPeers.Select(p => p.Endpoint)
             .Concat(options.StaticPeers ?? Array.Empty<string>())
@@ -246,6 +283,26 @@ public static class Program
         // Start background synchronization services
         await orchestrator.StartAsync(cts.Token);
         watcher.StartWatching();
+
+        // S-01 fix: Perform an authoritative startup flush before connecting to peers.
+        // This ensures any files written to the sync directory while the daemon was offline
+        // (e.g., concurrent offline edits in the multi-node conflict scenario) are fully
+        // ingested with their local vector clock advanced BEFORE the first cross-node sync
+        // fires. Without this, the remote peer may see stale metadata and incorrectly apply
+        // its version as ApplyRemote instead of detecting a Concurrent (conflict) relationship.
+        try
+        {
+            await watcher.FlushAsync(cts.Token);
+            LogEvent("SYNC", $"Startup directory scan complete.");
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            LogEvent("WARN", $"Startup flush warning: {ex.Message}");
+        }
 
         try
         {
