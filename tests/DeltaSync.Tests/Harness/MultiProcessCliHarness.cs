@@ -128,6 +128,45 @@ public sealed class CliNodeInstance : IDisposable
 
     public string GetErrorOutput() => string.Join(Environment.NewLine, _stderrQueue);
 
+    /// <summary>
+    /// Scrapes Prometheus metrics over HTTP from this node's metrics port.
+    /// </summary>
+    public async Task<string> ScrapeMetricsAsync(HttpClient? httpClient = null, CancellationToken ct = default)
+    {
+        bool disposeClient = httpClient == null;
+        var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+        try
+        {
+            return await client.GetStringAsync($"http://127.0.0.1:{MetricsPort}/metrics", ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (disposeClient) client.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Scrapes and extracts a numeric metric value by prefix (e.g. "deltasync_chunks_deduplicated_total").
+    /// </summary>
+    public async Task<long?> GetMetricValueAsync(string metricPrefix, HttpClient? httpClient = null, CancellationToken ct = default)
+    {
+        string body = await ScrapeMetricsAsync(httpClient, ct).ConfigureAwait(false);
+        foreach (var line in body.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.StartsWith('#')) continue;
+            if (trimmed.StartsWith(metricPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2 && long.TryParse(parts[1], out long val))
+                {
+                    return val;
+                }
+            }
+        }
+        return null;
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -302,6 +341,107 @@ public sealed class MultiProcessCliHarness : IAsyncDisposable
 
         string extraContext = node != null ? $" Output: {node.GetAllOutput()}" : string.Empty;
         throw new TimeoutException($"Failed to reach HTTP metrics endpoint on port {metricsPort} within {resolvedTimeout.TotalSeconds:F1}s.{extraContext}");
+    }
+
+    /// <summary>
+    /// Polls until the expected file exists in targetDirectory with the specified SHA-256 hash,
+    /// or throws TimeoutException within the bounded timeout.
+    /// </summary>
+    public static async Task<string> WaitForFileAsync(
+        string targetDirectory,
+        string relativePath,
+        string expectedSha256,
+        TimeSpan? timeout = null,
+        CliNodeInstance? nodeContext = null,
+        CliNodeInstance? otherNodeContext = null,
+        CancellationToken cancellationToken = default)
+    {
+        var resolvedTimeout = timeout ?? TimeSpan.FromSeconds(5.0);
+        var sw = Stopwatch.StartNew();
+        string fullPath = Path.Combine(targetDirectory, relativePath);
+
+        while (sw.Elapsed < resolvedTimeout)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (nodeContext is { HasExited: true })
+            {
+                throw new InvalidOperationException(
+                    $"Node {nodeContext.Name} exited prematurely with code {nodeContext.ExitCode}. Output: {nodeContext.GetAllOutput()}");
+            }
+
+            if (File.Exists(fullPath))
+            {
+                try
+                {
+                    byte[] bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                    string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+                    if (string.Equals(hash, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return hash;
+                    }
+                }
+                catch (IOException)
+                {
+                    // File may be mid-write or locked by OS
+                }
+            }
+
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+        }
+
+        string extra = (nodeContext != null ? $" Output ({nodeContext.Name}): {nodeContext.GetAllOutput()}" : string.Empty) +
+                       (otherNodeContext != null ? $" | Output ({otherNodeContext.Name}): {otherNodeContext.GetAllOutput()}" : string.Empty);
+        throw new TimeoutException($"File '{relativePath}' failed to converge to SHA-256 {expectedSha256} in {targetDirectory} within {resolvedTimeout.TotalSeconds:F1}s.{extra}");
+    }
+
+    /// <summary>
+    /// Polls until the count of non-metadata files in targetDirectory matches expectedCount,
+    /// or throws TimeoutException within the bounded timeout.
+    /// </summary>
+    public static async Task<int> WaitForFileCountAsync(
+        string targetDirectory,
+        int expectedCount,
+        TimeSpan? timeout = null,
+        CliNodeInstance? nodeContext = null,
+        CliNodeInstance? otherNodeContext = null,
+        CancellationToken cancellationToken = default)
+    {
+        var resolvedTimeout = timeout ?? TimeSpan.FromSeconds(5.0);
+        var sw = Stopwatch.StartNew();
+
+        while (sw.Elapsed < resolvedTimeout)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (nodeContext is { HasExited: true })
+            {
+                throw new InvalidOperationException(
+                    $"Node {nodeContext.Name} exited prematurely with code {nodeContext.ExitCode}. Output: {nodeContext.GetAllOutput()}");
+            }
+
+            if (Directory.Exists(targetDirectory))
+            {
+                try
+                {
+                    int count = Directory.EnumerateFiles(targetDirectory, "*", SearchOption.AllDirectories)
+                        .Count(f => !f.Contains(".deltasync"));
+                    if (count >= expectedCount)
+                    {
+                        return count;
+                    }
+                }
+                catch (IOException)
+                {
+                }
+            }
+
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+        }
+
+        string extra = (nodeContext != null ? $" Output ({nodeContext.Name}): {nodeContext.GetAllOutput()}" : string.Empty) +
+                       (otherNodeContext != null ? $" | Output ({otherNodeContext.Name}): {otherNodeContext.GetAllOutput()}" : string.Empty);
+        throw new TimeoutException($"Directory {targetDirectory} failed to reach {expectedCount} files within {resolvedTimeout.TotalSeconds:F1}s.{extra}");
     }
 
     /// <summary>

@@ -403,9 +403,9 @@ public sealed class FileWatcherService : IFileWatcherService
                 {
                     await DispatchDebouncedEventAsync(evt, cancellationToken).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Swallowing individual dispatch errors to prevent breaking the debounce loop
+                    Console.Error.WriteLine($"[WATCHER-ERROR] {evt.RelativePath}: {ex.Message}");
                 }
             }
         }

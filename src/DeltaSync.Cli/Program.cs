@@ -132,7 +132,13 @@ public static class Program
         string dbPath = Path.Combine(options.SyncPath, ".deltasync", "state.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
-        await using var store = new SqliteStateStore(dbPath);
+        var connectionFactory = new SqliteConnectionFactory(dbPath);
+        await using (var conn = await connectionFactory.OpenConnectionAsync(cts.Token))
+        {
+            await SqliteSchemaMigrator.MigrateAsync(conn, cts.Token);
+        }
+
+        await using var store = new SqliteStateStore(connectionFactory);
         var chunkProvider = new SqliteLocalChunkProvider(store, options.SyncPath);
 
         await using var watcher = new FileWatcherService(
@@ -277,6 +283,26 @@ public static class Program
         // Start background synchronization services
         await orchestrator.StartAsync(cts.Token);
         watcher.StartWatching();
+
+        // S-01 fix: Perform an authoritative startup flush before connecting to peers.
+        // This ensures any files written to the sync directory while the daemon was offline
+        // (e.g., concurrent offline edits in the multi-node conflict scenario) are fully
+        // ingested with their local vector clock advanced BEFORE the first cross-node sync
+        // fires. Without this, the remote peer may see stale metadata and incorrectly apply
+        // its version as ApplyRemote instead of detecting a Concurrent (conflict) relationship.
+        try
+        {
+            await watcher.FlushAsync(cts.Token);
+            LogEvent("SYNC", $"Startup directory scan complete.");
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            LogEvent("WARN", $"Startup flush warning: {ex.Message}");
+        }
 
         try
         {

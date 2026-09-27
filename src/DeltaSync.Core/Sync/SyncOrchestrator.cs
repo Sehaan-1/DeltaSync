@@ -74,7 +74,6 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         _stateStore = stateStore ?? throw new ArgumentNullException(nameof(stateStore));
         _wireProtocol = wireProtocol ?? throw new ArgumentNullException(nameof(wireProtocol));
         _watcherService = watcherService;
-        _ingestor = ingestor;
         _peerProvider = peerProvider;
         _metricsSink = metricsSink ?? NullSyncMetricsSink.Instance;
         _logger = logger;
@@ -84,6 +83,8 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
             : (!string.IsNullOrWhiteSpace(ingestor?.LocalPeerId)
                 ? ingestor.LocalPeerId
                 : Guid.NewGuid().ToString("N")[..8]);
+
+        _ingestor = ingestor ?? (watcherService as FileWatcherService)?.Ingestor ?? new LocalFileIngestor(syncRootDirectory, stateStore, _localPeerId);
 
         _antiEntropyInterval = antiEntropyInterval ?? TimeSpan.FromSeconds(15);
     }
@@ -129,7 +130,10 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
             }
         }
 
-        // 4. Start periodic anti-entropy heartbeat timer
+        // 4. Wire reactive peer sync notices
+        _wireProtocol.SyncNoticeReceived += HandleRemoteSyncNoticeAsync;
+
+        // 5. Start periodic anti-entropy heartbeat timer
         if (_antiEntropyInterval > TimeSpan.Zero)
         {
             _antiEntropyTimer = new Timer(
@@ -175,6 +179,8 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
             _peerProvider.ConnectionEstablished -= HandlePeerConnectionEstablished;
             _peerProvider.ConnectionClosed -= HandlePeerConnectionClosed;
         }
+
+        _wireProtocol.SyncNoticeReceived -= HandleRemoteSyncNoticeAsync;
 
         foreach (var entry in _channels.Values)
         {
@@ -320,6 +326,11 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                 if (modified) anyChangesApplied = true;
             }
 
+            if (anyChangesApplied)
+            {
+                await _wireProtocol.NotifySyncCompletedAsync(channel, ct).ConfigureAwait(false);
+            }
+
             _metricsSink.RecordSyncCycleCompleted(stopwatch.Elapsed);
             return anyChangesApplied;
         }
@@ -343,7 +354,14 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         {
             try
             {
-                await SynchronizeAsync(ch, ct).ConfigureAwait(false);
+                bool applied = await SynchronizeAsync(ch, ct).ConfigureAwait(false);
+                if (applied)
+                {
+                    foreach (var other in _channels.Keys.Where(otherCh => otherCh.IsConnected && otherCh != ch))
+                    {
+                        await _wireProtocol.NotifySyncCompletedAsync(other, ct).ConfigureAwait(false);
+                    }
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -412,7 +430,14 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         string normalizedPath,
         CancellationToken ct)
     {
-        var localMeta = await _stateStore.GetFileAsync(normalizedPath, ct).ConfigureAwait(false);
+        FileMetadata? localMeta = null;
+        string localFullPath = Path.Combine(_syncRootDirectory, normalizedPath);
+        if (_ingestor != null && File.Exists(localFullPath))
+        {
+            localMeta = await _ingestor.IngestFileAsync(normalizedPath, ct).ConfigureAwait(false);
+        }
+
+        localMeta ??= await _stateStore.GetFileAsync(normalizedPath, ct).ConfigureAwait(false);
         if (localMeta == null || localMeta.IsDeleted)
         {
             return false;
@@ -491,8 +516,25 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
             return false;
         }
 
-        // 2. Query local file state
-        var localMeta = await _stateStore.GetFileAsync(normalizedPath, ct).ConfigureAwait(false);
+        // 2. Query local file state and ensure any un-ingested local modifications or deletions are ingested
+        // to prevent race conditions where remote sync arrives before local debounce expires (Invariant I2 / ADR-0001).
+        FileMetadata? localMeta = null;
+        string localFullPath = Path.Combine(_syncRootDirectory, normalizedPath);
+        if (_ingestor != null && File.Exists(localFullPath))
+        {
+            localMeta = await _ingestor.IngestFileAsync(normalizedPath, ct).ConfigureAwait(false);
+        }
+        else if (_ingestor != null && !File.Exists(localFullPath))
+        {
+            var existingRecord = await _stateStore.GetFileAsync(normalizedPath, ct).ConfigureAwait(false);
+            if (existingRecord != null && !existingRecord.IsDeleted)
+            {
+                await _ingestor.DeleteFileAsync(normalizedPath, ct).ConfigureAwait(false);
+                localMeta = await _stateStore.GetFileAsync(normalizedPath, ct).ConfigureAwait(false);
+            }
+        }
+
+        localMeta ??= await _stateStore.GetFileAsync(normalizedPath, ct).ConfigureAwait(false);
         string? localHash = (localMeta == null || localMeta.IsDeleted) ? null : localMeta.RootHash;
         VectorClock localClock = localMeta?.Clock ?? VectorClock.Empty;
 
@@ -575,27 +617,27 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                     // preserve resilience on permission-restricted filesystems
                 }
             }
-
-            // Commit metadata and chunk mapping to SQLite.
-            // M-01 fix: preserve the remote file's original mtime from the manifest so that
-            // FileWatcherService.FlushAsync does not repeatedly re-ingest already-synced files.
-            var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
-            var newMetadata = new FileMetadata(
-                relativePath: normalizedPath,
-                sizeBytes: remoteManifest.TotalBytes,
-                rootHash: remoteManifest.ContentHash,
-                modifiedUtc: remoteManifest.ModifiedUtc,
-                clock: targetClock,
-                isDeleted: false,
-                version: (localMeta?.Version ?? 0) + 1);
-
-            await _stateStore.UpsertFileAsync(newMetadata, chunkDescriptors, ct).ConfigureAwait(false);
-            return true;
         }
         finally
         {
             _watcherService?.UnsuppressPath(normalizedPath);
         }
+
+        // Commit metadata and chunk mapping to SQLite.
+        // M-01 fix: preserve the remote file's original mtime from the manifest so that
+        // FileWatcherService.FlushAsync does not repeatedly re-ingest already-synced files.
+        var chunkDescriptors = remoteManifest.Chunks.Select(c => c.ToDescriptor()).ToList();
+        var newMetadata = new FileMetadata(
+            relativePath: normalizedPath,
+            sizeBytes: remoteManifest.TotalBytes,
+            rootHash: remoteManifest.ContentHash,
+            modifiedUtc: remoteManifest.ModifiedUtc,
+            clock: targetClock,
+            isDeleted: false,
+            version: (localMeta?.Version ?? 0) + 1);
+
+        await _stateStore.UpsertFileAsync(newMetadata, chunkDescriptors, ct).ConfigureAwait(false);
+        return true;
     }
 
     private async Task<bool> PreserveSideBySideConflictAsync(
@@ -785,6 +827,10 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         try
         {
             await SynchronizeAllAsync(ct).ConfigureAwait(false);
+            foreach (var ch in _channels.Keys.Where(c => c.IsConnected))
+            {
+                await _wireProtocol.NotifySyncCompletedAsync(ch, ct).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
@@ -800,6 +846,10 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         try
         {
             await SynchronizeAllAsync(ct).ConfigureAwait(false);
+            foreach (var ch in _channels.Keys.Where(c => c.IsConnected))
+            {
+                await _wireProtocol.NotifySyncCompletedAsync(ch, ct).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
@@ -815,11 +865,37 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         try
         {
             await SynchronizeAllAsync(ct).ConfigureAwait(false);
+            foreach (var ch in _channels.Keys.Where(c => c.IsConnected))
+            {
+                await _wireProtocol.NotifySyncCompletedAsync(ch, ct).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Watcher sync failed for rename {OldPath} -> {NewPath}", oldRelativePath, newRelativePath);
+        }
+    }
+
+    private async Task HandleRemoteSyncNoticeAsync(IPeerTransportChannel channel)
+    {
+        if (!IsRunning || !channel.IsConnected) return;
+        var ct = _runCts?.Token ?? CancellationToken.None;
+        try
+        {
+            bool applied = await SynchronizeAsync(channel, ct).ConfigureAwait(false);
+            if (applied)
+            {
+                foreach (var other in _channels.Keys.Where(ch => ch.IsConnected && ch != channel))
+                {
+                    await _wireProtocol.NotifySyncCompletedAsync(other, ct).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Reactive peer sync failed for channel {PeerId}", channel.RemotePeerId);
         }
     }
 
