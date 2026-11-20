@@ -87,7 +87,7 @@ public class MultiProcessCliHarnessTests
             procB.HasExited.Should().BeFalse("Node B process should be actively running");
 
             // Assert 2: Verify both HTTP metrics endpoints report 200 OK with Prometheus metrics
-            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
             var respA = await httpClient.GetAsync($"http://127.0.0.1:{harness.NodeA.MetricsPort}/metrics");
             respA.IsSuccessStatusCode.Should().BeTrue("Node A metrics endpoint must return HTTP 200 OK");

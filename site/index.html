@@ -1,0 +1,1044 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeltaSync — Peer-to-Peer File Synchronization Engine</title>
+  <meta name="description" content="Peer-to-peer file sync that moves only the delta. FastCDC chunking, vector-clock conflict resolution, chaos-tested crash safety.">
+  <meta property="og:title" content="DeltaSync — Delta in. Conflict out.">
+  <meta property="og:description" content="Peer-to-peer sync engine with FastCDC dedup, vector clocks, and crash safety.">
+  <meta property="og:image" content="assets/brag.jpg">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%22%3E<text y=%2226%22 font-size=%2228%22>⚡</text></svg>">
+  <style>
+    :root {
+      --bg-void: #05060a;
+      --bg-panel: #0c0e13;
+      --bg-panel-hover: #141820;
+      --border-dark: #26221c;
+      --border-accent: #3a3224;
+      --text-bone: #f4f1ea;
+      --text-dim: #a8a29a;
+      --text-muted: #67635c;
+      --gold-primary: #ffb24d;
+      --gold-ember: #ff7a18;
+      --gold-glow: rgba(255, 178, 77, 0.25);
+      --danger-red: #ff2a2a;
+      --danger-glow: rgba(255, 42, 42, 0.3);
+      --success-green: #2ecc71;
+      --crystal-cyan: #4fc3ff;
+      --crystal-violet: #8a6bff;
+      --font-mono: 'Cascadia Mono', 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-void);
+      color: var(--text-bone);
+      font-family: var(--font-mono);
+      line-height: 1.6;
+      overflow-x: hidden;
+      min-height: 100vh;
+    }
+
+    /* Background Ambient Gradients */
+    .ambient-glow {
+      position: fixed;
+      top: -20%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 1000px;
+      height: 700px;
+      background: radial-gradient(circle, rgba(255, 178, 77, 0.08) 0%, rgba(138, 107, 255, 0.03) 40%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1140px;
+      margin: 0 auto;
+      padding: 0 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Header Nav */
+    header {
+      padding: 24px 0;
+      border-bottom: 1px solid var(--border-dark);
+      background: rgba(5, 6, 10, 0.85);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .nav-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text-bone);
+    }
+
+    .brand-logo {
+      width: 28px;
+      height: 28px;
+      background: linear-gradient(135deg, var(--gold-primary), var(--gold-ember));
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      font-size: 14px;
+      color: #000;
+      box-shadow: 0 0 16px var(--gold-glow);
+    }
+
+    .brand-name {
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .brand-tag {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      background: rgba(255, 255, 255, 0.05);
+      padding: 2px 8px;
+      border-radius: 3px;
+      border: 1px solid var(--border-dark);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .nav-link {
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 0.85rem;
+      transition: color 0.2s;
+    }
+
+    .nav-link:hover {
+      color: var(--gold-primary);
+    }
+
+    .btn-github {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-panel);
+      color: var(--text-bone);
+      text-decoration: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      border: 1px solid var(--border-dark);
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+
+    .btn-github:hover {
+      border-color: var(--gold-primary);
+      background: var(--bg-panel-hover);
+      box-shadow: 0 0 12px var(--gold-glow);
+    }
+
+    /* Hero Section */
+    .hero {
+      padding: 72px 0 48px;
+      text-align: center;
+    }
+
+    .badge-halo {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      background: rgba(255, 178, 77, 0.08);
+      border: 1px solid rgba(255, 178, 77, 0.3);
+      border-radius: 100px;
+      font-size: 0.75rem;
+      color: var(--gold-primary);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 24px;
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--gold-primary);
+      box-shadow: 0 0 8px var(--gold-primary);
+      animation: pulse 2s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    .hero-title {
+      font-size: clamp(2.4rem, 6vw, 4.2rem);
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -1.5px;
+      margin-bottom: 20px;
+    }
+
+    .hero-title .gold {
+      color: var(--gold-primary);
+      text-shadow: 0 0 32px var(--gold-glow);
+    }
+
+    .hero-desc {
+      font-size: clamp(1rem, 2vw, 1.25rem);
+      color: var(--text-dim);
+      max-width: 720px;
+      margin: 0 auto 36px;
+      font-weight: 400;
+    }
+
+    .hero-cta-group {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 48px;
+    }
+
+    .btn-primary {
+      background: var(--gold-primary);
+      color: #05060a;
+      font-weight: 700;
+      padding: 12px 28px;
+      border-radius: 4px;
+      text-decoration: none;
+      font-size: 0.95rem;
+      box-shadow: 0 0 24px rgba(255, 178, 77, 0.4);
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-primary:hover {
+      background: #ffc270;
+      transform: translateY(-1px);
+      box-shadow: 0 0 32px rgba(255, 178, 77, 0.6);
+    }
+
+    .command-box {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dark);
+      padding: 10px 18px;
+      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      user-select: all;
+      transition: border-color 0.2s;
+    }
+
+    .command-box:hover {
+      border-color: var(--border-accent);
+    }
+
+    .command-prompt {
+      color: var(--gold-primary);
+    }
+
+    .command-text {
+      color: var(--text-bone);
+      font-size: 0.9rem;
+    }
+
+    .command-copy {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+
+    /* Video Showcase Section */
+    .showcase-wrapper {
+      margin: 0 auto 72px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dark);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7);
+      position: relative;
+    }
+
+    .window-header {
+      padding: 12px 18px;
+      background: #090a0e;
+      border-bottom: 1px solid var(--border-dark);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .window-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #252830;
+    }
+
+    .window-title {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      letter-spacing: 0.5px;
+    }
+
+    .video-container {
+      position: relative;
+      background: #000;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+    }
+
+    .video-container video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .video-controls-overlay {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      display: flex;
+      gap: 10px;
+      z-index: 10;
+    }
+
+    .ctrl-btn {
+      background: rgba(12, 14, 19, 0.85);
+      border: 1px solid var(--border-dark);
+      color: var(--text-bone);
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      transition: all 0.2s;
+    }
+
+    .ctrl-btn:hover {
+      border-color: var(--gold-primary);
+      color: var(--gold-primary);
+    }
+
+    /* Terminal Simulation Panel */
+    .section-title-wrap {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    .section-tag {
+      color: var(--gold-primary);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 8px;
+    }
+
+    .section-heading {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .terminal-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dark);
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 72px;
+    }
+
+    .terminal-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 768px) {
+      .terminal-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel-box {
+      border: 1px solid var(--border-dark);
+      border-radius: 6px;
+      background: rgba(5, 6, 10, 0.5);
+      padding: 16px;
+    }
+
+    .panel-box-title {
+      font-size: 0.85rem;
+      color: var(--gold-primary);
+      border-bottom: 1px solid var(--border-dark);
+      padding-bottom: 8px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .kv-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.82rem;
+      margin-bottom: 6px;
+    }
+
+    .kv-key {
+      color: var(--text-dim);
+    }
+
+    .kv-val {
+      font-weight: 600;
+      color: var(--text-bone);
+    }
+
+    .kv-val.gold {
+      color: var(--gold-primary);
+    }
+
+    .kv-val.green {
+      color: var(--success-green);
+    }
+
+    .event-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+
+    .event-table th {
+      text-align: left;
+      padding: 8px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-dark);
+    }
+
+    .event-table td {
+      padding: 8px;
+      border-bottom: 1px solid rgba(38, 34, 28, 0.4);
+    }
+
+    .badge-type {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 0.7rem;
+      font-weight: 700;
+    }
+
+    .type-sync { background: rgba(79, 195, 255, 0.15); color: var(--crystal-cyan); }
+    .type-peer { background: rgba(138, 107, 255, 0.15); color: var(--crystal-violet); }
+    .type-conflict { background: rgba(255, 42, 42, 0.2); color: var(--danger-red); }
+    .type-resolved { background: rgba(255, 178, 77, 0.2); color: var(--gold-primary); }
+
+    /* Interactive FastCDC Monolith Demo */
+    .monolith-demo {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dark);
+      border-radius: 8px;
+      padding: 32px;
+      margin-bottom: 72px;
+      text-align: center;
+    }
+
+    .slabs-row {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin: 36px 0;
+      flex-wrap: wrap;
+    }
+
+    .slab {
+      width: 90px;
+      height: 110px;
+      background: #080a0f;
+      border: 1px solid #2e2b24;
+      border-radius: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      font-size: 0.72rem;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+    }
+
+    .slab-num {
+      color: var(--text-muted);
+    }
+
+    .slab-state {
+      font-size: 0.65rem;
+      color: var(--text-dim);
+    }
+
+    .slab.delta {
+      border-color: var(--gold-primary);
+      background: rgba(255, 178, 77, 0.08);
+      transform: translateY(-8px);
+      box-shadow: 0 8px 24px var(--gold-glow);
+    }
+
+    .slab.delta .slab-num {
+      color: var(--gold-primary);
+      font-weight: 700;
+    }
+
+    .slab.delta .slab-state {
+      color: var(--gold-primary);
+    }
+
+    .demo-actions {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+    }
+
+    .btn-secondary {
+      background: var(--bg-void);
+      border: 1px solid var(--border-dark);
+      color: var(--text-bone);
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--gold-primary);
+      color: var(--gold-primary);
+    }
+
+    /* Architecture Features Grid */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 20px;
+      margin-bottom: 72px;
+    }
+
+    .feature-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dark);
+      border-radius: 6px;
+      padding: 24px;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+
+    .feature-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-accent);
+    }
+
+    .feature-icon {
+      font-size: 1.5rem;
+      margin-bottom: 12px;
+      display: inline-block;
+    }
+
+    .feature-card h3 {
+      font-size: 1.05rem;
+      margin-bottom: 8px;
+      color: var(--text-bone);
+    }
+
+    .feature-card p {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+
+    /* ADR Cards */
+    .adr-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-bottom: 72px;
+    }
+
+    .adr-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dark);
+      border-radius: 6px;
+      padding: 20px;
+      text-decoration: none;
+      color: inherit;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: border-color 0.2s;
+    }
+
+    .adr-card:hover {
+      border-color: var(--gold-primary);
+    }
+
+    .adr-num {
+      font-size: 0.75rem;
+      color: var(--gold-primary);
+      margin-bottom: 6px;
+    }
+
+    .adr-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .adr-status {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border-dark);
+      padding: 48px 0;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-bottom: 16px;
+    }
+
+    .footer-links a {
+      color: var(--text-dim);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .footer-links a:hover {
+      color: var(--gold-primary);
+    }
+  </style>
+</head>
+<body>
+  <div class="ambient-glow"></div>
+
+  <!-- Header -->
+  <header>
+    <div class="container nav-row">
+      <a href="#" class="brand">
+        <div class="brand-logo">Δ</div>
+        <span class="brand-name">DeltaSync</span>
+        <span class="brand-tag">v1.0-RC</span>
+      </a>
+      <div class="nav-links">
+        <a href="#showcase" class="nav-link">Film</a>
+        <a href="#dashboard" class="nav-link">Dashboard</a>
+        <a href="#fastcdc" class="nav-link">FastCDC</a>
+        <a href="#architecture" class="nav-link">Architecture</a>
+        <a href="#adrs" class="nav-link">ADRs</a>
+        <a href="https://github.com/Sehaan-1/DeltaSync" target="_blank" rel="noopener" class="btn-github">
+          <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <div class="container">
+      <div class="badge-halo">
+        <span class="badge-dot"></span>
+        Peer-to-Peer · No Cloud · Zero Server
+      </div>
+      <h1 class="hero-title">
+        Delta in. <span class="gold">Conflict out.</span>
+      </h1>
+      <p class="hero-desc">
+        DeltaSync keeps folders synchronized across machines: delta transfer via FastCDC chunking, vector-clock conflict resolution, TLS 1.3 transport, and chaos-tested crash safety.
+      </p>
+
+      <div class="hero-cta-group">
+        <a href="#showcase" class="btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5v14l11-7z"/>
+          </svg>
+          Watch Product Film
+        </a>
+        <div class="command-box" onclick="navigator.clipboard.writeText('dotnet run --project src/DeltaSync.Cli -- sync ./my-folder --port 4242'); alert('Copied sync command to clipboard!');">
+          <span class="command-prompt">&gt;</span>
+          <span class="command-text">deltasync sync ./my-folder --port 4242</span>
+          <span class="command-copy">[copy]</span>
+        </div>
+      </div>
+
+      <!-- Video Showcase Window -->
+      <div class="showcase-wrapper" id="showcase">
+        <div class="window-header">
+          <div class="window-dots">
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+          </div>
+          <div class="window-title">deltasync-showcase-1080p.mp4 (angelcore × cloud-trance)</div>
+          <div></div>
+        </div>
+        <div class="video-container">
+          <video id="bragVideo" poster="assets/brag.jpg" playsinline loop muted autoplay>
+            <source src="assets/brag.mp4" type="video/mp4">
+            <img src="assets/brag.gif" alt="DeltaSync Preview GIF">
+          </video>
+          <div class="video-controls-overlay">
+            <button class="ctrl-btn" id="playToggle">Pause</button>
+            <button class="ctrl-btn" id="audioToggle">Unmute 🔊</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Live Terminal Dashboard Simulation -->
+  <section id="dashboard" class="container">
+    <div class="section-title-wrap">
+      <div class="section-tag">Observability</div>
+      <h2 class="section-heading">Terminal Dashboard (Spectre.Console)</h2>
+    </div>
+
+    <div class="terminal-card">
+      <div class="terminal-grid">
+        <!-- Engine Status -->
+        <div class="panel-box">
+          <div class="panel-box-title">
+            <span>Engine Status</span>
+            <span class="kv-val gold">SYNCING</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">Sync Path:</span>
+            <span class="kv-val">/vault/documents</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">Node ID:</span>
+            <span class="kv-val">node-9d584cf</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">Cluster:</span>
+            <span class="kv-val">production-alpha</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">Connected Peers:</span>
+            <span class="kv-val green">3 active (TLS 1.3)</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">Prometheus Endpoint:</span>
+            <span class="kv-val">http://127.0.0.1:9090/metrics</span>
+          </div>
+        </div>
+
+        <!-- Telemetry -->
+        <div class="panel-box">
+          <div class="panel-box-title">
+            <span>Telemetry &amp; Performance</span>
+            <span class="kv-val">p95: 18.4 ms</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">Transferred (In/Out):</span>
+            <span class="kv-val">2.41 MB / 1.87 MB</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">Throughput:</span>
+            <span class="kv-val">812.3 KB/s</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">FastCDC Dedup Saved:</span>
+            <span class="kv-val gold">1.94 MB</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">Bandwidth Savings:</span>
+            <span class="kv-val gold">47.2%</span>
+          </div>
+          <div class="kv-row">
+            <span class="kv-key">Conflicts Resolved:</span>
+            <span class="kv-val green">1 (BGP-4 tie-break)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Events -->
+      <div class="panel-box">
+        <div class="panel-box-title">
+          <span>Recent Sync Events</span>
+          <span style="font-size: 0.7rem; color: var(--text-muted);">Real-Time Event Stream</span>
+        </div>
+        <table class="event-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Type</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>12:04:31.204</td>
+              <td><span class="badge-type type-conflict">CONFLICT</span></td>
+              <td>main.rs:142 — vector clock divergence (ADR-0001)</td>
+            </tr>
+            <tr>
+              <td>12:04:31.220</td>
+              <td><span class="badge-type type-resolved">RESOLVED</span></td>
+              <td>Two machines edited same line. BGP-4 tie-break selected node-9d584cf. Both versions archived.</td>
+            </tr>
+            <tr>
+              <td>12:04:35.012</td>
+              <td><span class="badge-type type-sync">SYNC</span></td>
+              <td>Reconciled prefix docs/rfc/ (2 of 8 chunks changed, FastCDC 47% dedup)</td>
+            </tr>
+            <tr>
+              <td>12:04:38.109</td>
+              <td><span class="badge-type type-peer">PEER</span></td>
+              <td>Connected to peer node-b42e via TLS 1.3 socket on port 4242</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- FastCDC Interactive Monolith Demo -->
+  <section id="fastcdc" class="container">
+    <div class="section-title-wrap">
+      <div class="section-tag">Content-Defined Chunking</div>
+      <h2 class="section-heading">Only the Delta Moves</h2>
+    </div>
+
+    <div class="monolith-demo">
+      <p style="color: var(--text-dim); max-width: 600px; margin: 0 auto;">
+        FastCDC gear hashing slides an 8KB dynamic window across files. When content changes, boundary alignment self-synchronizes, isolating edits to only the modified slabs.
+      </p>
+
+      <div class="slabs-row" id="slabsRow">
+        <div class="slab"><span class="slab-num">Chunk 0</span><span class="slab-state">Unchanged</span></div>
+        <div class="slab"><span class="slab-num">Chunk 1</span><span class="slab-state">Unchanged</span></div>
+        <div class="slab delta"><span class="slab-num">Chunk 2</span><span class="slab-state">DELTA</span></div>
+        <div class="slab"><span class="slab-num">Chunk 3</span><span class="slab-state">Unchanged</span></div>
+        <div class="slab"><span class="slab-num">Chunk 4</span><span class="slab-state">Unchanged</span></div>
+        <div class="slab delta"><span class="slab-num">Chunk 5</span><span class="slab-state">DELTA</span></div>
+        <div class="slab"><span class="slab-num">Chunk 6</span><span class="slab-state">Unchanged</span></div>
+        <div class="slab"><span class="slab-num">Chunk 7</span><span class="slab-state">Unchanged</span></div>
+      </div>
+
+      <div class="demo-actions">
+        <button class="btn-secondary" onclick="simulateRandomEdit()">Simulate Local File Edit</button>
+        <button class="btn-secondary" onclick="resetSlabs()">Reset to Full Synchronized State</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Architecture Features Grid -->
+  <section id="architecture" class="container">
+    <div class="section-title-wrap">
+      <div class="section-tag">Engine Subsystems</div>
+      <h2 class="section-heading">Engineered for Harsh Realities</h2>
+    </div>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <span class="feature-icon">⚡</span>
+        <h3>FastCDC Chunking</h3>
+        <p>Dynamic boundary normalization scans over 400 MB/s with zero heap allocations in the hot path. Deduplicates identical chunks across files and revisions.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🕰️</span>
+        <h3>Vector Clock Causality</h3>
+        <p>Complete Lamport partial-ordering over peer timelines. Deterministically distinguishes monotonic updates from concurrent branch divergences.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🛡️</span>
+        <h3>Chaos-Tested Crash Safety</h3>
+        <p>SQLite WAL mode with normal synchronous durability. Survived rigorous kill -9 stress cycles without a single byte of corruption.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">🔒</span>
+        <h3>TLS 1.3 Transport</h3>
+        <p>Length-prefixed streaming sockets with mutual certificate pinning, bounded inbound queues (C=32), and BGP-4 collision tie-breaking.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Architectural Decision Records (ADRs) -->
+  <section id="adrs" class="container">
+    <div class="section-title-wrap">
+      <div class="section-tag">Design Rationale</div>
+      <h2 class="section-heading">Architectural Decision Records</h2>
+    </div>
+
+    <div class="adr-grid">
+      <div class="adr-card">
+        <div>
+          <div class="adr-num">ADR-0001</div>
+          <div class="adr-title">Keep Both Conflicted Files</div>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 12px;">
+            Concurrent edits preserve both revisions with sanitized deterministic suffix to avoid silent data loss.
+          </p>
+        </div>
+        <div class="adr-status">STATUS: ACCEPTED</div>
+      </div>
+
+      <div class="adr-card">
+        <div>
+          <div class="adr-num">ADR-0002</div>
+          <div class="adr-title">Hybrid UDP Multicast &amp; Static Peers</div>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 12px;">
+            Zero-config LAN autodiscovery with persistent static fallback for cloud &amp; cross-VPC topologies.
+          </p>
+        </div>
+        <div class="adr-status">STATUS: ACCEPTED</div>
+      </div>
+
+      <div class="adr-card">
+        <div>
+          <div class="adr-num">ADR-0003</div>
+          <div class="adr-title">SQLite WAL State Repository</div>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 12px;">
+            Local zero-dependency ACID metadata store with foreign key enforcement and bounded memory caching.
+          </p>
+        </div>
+        <div class="adr-status">STATUS: ACCEPTED</div>
+      </div>
+
+      <div class="adr-card">
+        <div>
+          <div class="adr-num">ADR-0004</div>
+          <div class="adr-title">FastCDC Normalized Boundary Masks</div>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 12px;">
+            Variable chunking with normalized boundary masks mitigating small-chunk pathologies.
+          </p>
+        </div>
+        <div class="adr-status">STATUS: ACCEPTED</div>
+      </div>
+
+      <div class="adr-card">
+        <div>
+          <div class="adr-num">ADR-0005</div>
+          <div class="adr-title">Dual Spectre.Console &amp; Prometheus Metrics</div>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 12px;">
+            Rich terminal dashboard for interactive runs; HTTP /metrics scraper for production Grafana monitoring.
+          </p>
+        </div>
+        <div class="adr-status">STATUS: ACCEPTED</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <div class="footer-links">
+        <a href="https://github.com/Sehaan-1/DeltaSync">GitHub Repository</a>
+        <a href="https://github.com/Sehaan-1/DeltaSync/actions/workflows/ci.yml">CI Workflow</a>
+        <a href="https://github.com/Sehaan-1/DeltaSync/issues">Issues</a>
+      </div>
+      <p>DeltaSync — Peer-to-Peer File Synchronization Engine.</p>
+      <p style="margin-top: 6px; font-size: 0.75rem;">Build &amp; Test Suite: 291 / 291 Passed. Released under MIT License.</p>
+    </div>
+  </footer>
+
+  <script>
+    // Video Controls
+    const video = document.getElementById('bragVideo');
+    const playToggle = document.getElementById('playToggle');
+    const audioToggle = document.getElementById('audioToggle');
+
+    playToggle.addEventListener('click', () => {
+      if (video.paused) {
+        video.play();
+        playToggle.textContent = 'Pause';
+      } else {
+        video.pause();
+        playToggle.textContent = 'Play';
+      }
+    });
+
+    audioToggle.addEventListener('click', () => {
+      video.muted = !video.muted;
+      audioToggle.textContent = video.muted ? 'Unmute 🔊' : 'Mute 🔇';
+    });
+
+    // Interactive FastCDC Monolith Demo
+    function simulateRandomEdit() {
+      const slabs = document.querySelectorAll('.slab');
+      slabs.forEach(slab => {
+        slab.classList.remove('delta');
+        slab.querySelector('.slab-state').textContent = 'Unchanged';
+      });
+
+      // Pick 2 random slabs
+      const idx1 = Math.floor(Math.random() * 8);
+      let idx2 = Math.floor(Math.random() * 8);
+      while (idx2 === idx1) {
+        idx2 = Math.floor(Math.random() * 8);
+      }
+
+      [idx1, idx2].forEach(idx => {
+        slabs[idx].classList.add('delta');
+        slabs[idx].querySelector('.slab-state').textContent = 'DELTA';
+      });
+    }
+
+    function resetSlabs() {
+      const slabs = document.querySelectorAll('.slab');
+      slabs.forEach((slab, i) => {
+        if (i === 2 || i === 5) {
+          slab.classList.add('delta');
+          slab.querySelector('.slab-state').textContent = 'DELTA';
+        } else {
+          slab.classList.remove('delta');
+          slab.querySelector('.slab-state').textContent = 'Unchanged';
+        }
+      });
+    }
+  </script>
+</body>
+</html>

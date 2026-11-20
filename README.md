@@ -1,6 +1,14 @@
 # DeltaSync
 
+[![CI & Deployment](https://github.com/Sehaan-1/DeltaSync/actions/workflows/ci.yml/badge.svg)](https://github.com/Sehaan-1/DeltaSync/actions/workflows/ci.yml)
+[![GitHub Pages](https://img.shields.io/badge/Live%20Showcase-GitHub%20Pages-gold)](https://sehaan-1.github.io/DeltaSync/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 > Peer-to-Peer File Synchronization Engine with Delta Transfer, Conflict Detection, and Chaos-Tested Crash Safety.
+
+🌐 **Live Showcase & Interactive Demo:** [https://sehaan-1.github.io/DeltaSync/](https://sehaan-1.github.io/DeltaSync/)
+
+![DeltaSync Showcase](site/assets/brag.gif)
 
 ## Overview
 DeltaSync is a cross-device synchronization engine designed to keep folders identical across machines with delta transfer, vector clock conflict resolution, and crash-safe reliability guarantees.

@@ -117,15 +117,6 @@ public static class Program
         }
 
         await using var metricsServer = new PrometheusMetricsServer(metricsSink, options.MetricsPort);
-        try
-        {
-            metricsServer.Start();
-            LogEvent("METRICS", $"Prometheus scrape server listening on http://127.0.0.1:{options.MetricsPort}/metrics");
-        }
-        catch (Exception ex)
-        {
-            LogEvent("WARN", $"Prometheus server warning: {ex.Message}");
-        }
 
         // Ensure directories exist
         Directory.CreateDirectory(options.SyncPath);
@@ -317,6 +308,16 @@ public static class Program
                 AnsiConsole.MarkupLine($"[bold red]Error:[/] Failed to bind TCP listener on port {options.ListenPort}: {Markup.Escape(ex.Message)}");
             }
             return 1;
+        }
+
+        try
+        {
+            metricsServer.Start();
+            LogEvent("METRICS", $"Prometheus scrape server listening on http://127.0.0.1:{options.MetricsPort}/metrics");
+        }
+        catch (Exception ex)
+        {
+            LogEvent("WARN", $"Prometheus server warning: {ex.Message}");
         }
 
         // Trigger connection attempts for already discovered/configured static peers

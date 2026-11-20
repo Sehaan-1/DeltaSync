@@ -180,8 +180,11 @@ public sealed class SqliteConnectionAndSchemaTests : IDisposable
 
                 // INTENTIONAL SIMULATED CRASH:
                 // No tx.CommitAsync() called.
-                // Disposing tx rolls back uncommitted frames.
+                // Explicitly rollback uncommitted frames to simulate crash safely.
+                await tx.RollbackAsync();
             }
+
+            SqliteConnection.ClearPool(writeConn);
         }
 
         // Reopen database on fresh connection

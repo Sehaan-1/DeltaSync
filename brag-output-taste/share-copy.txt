@@ -1,0 +1,1 @@
+Introducing DeltaSync: peer-to-peer file sync that moves only the delta — not the whole file. FastCDC dedup, vector-clock conflict resolution, chaos-tested crash safety. Now with 100% more ascension.

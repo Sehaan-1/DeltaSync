@@ -320,7 +320,10 @@ public sealed class MultiProcessCliHarness : IAsyncDisposable
                 using var resp = await httpClient.GetAsync($"http://127.0.0.1:{metricsPort}/metrics", linkedCts.Token);
                 if (resp.IsSuccessStatusCode)
                 {
-                    return;
+                    if (node == null || node.GetAllOutput().Contains("[NET] TCP peer transport listener active"))
+                    {
+                        return;
+                    }
                 }
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

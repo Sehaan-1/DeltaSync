@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>DeltaSync — Holy Sync Engine</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "Cascadia Mono";
+        src: local("Cascadia Mono");
+      }
+      @font-face {
+        font-family: "Consolas";
+        src: local("Consolas");
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        src: local("JetBrains Mono");
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: #05060a; }
+      body {
+        font-family: ui-monospace, "Cascadia Mono", Consolas, "JetBrains Mono", monospace;
+        color: #f4f1ea;
+        -webkit-font-smoothing: antialiased;
+      }
+      #root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #05060a;
+      }
+      .clip { position: absolute; inset: 0; }
+      .scene-content { position: absolute; inset: 0; }
+
+      .dim { color: #A8A29A; }
+      .gold { color: #ffb24d; }
+      .red { color: #ff2a2a; }
+
+      .panel {
+        background: rgba(12, 14, 19, 0.82);
+        border: 1px solid #26221c;
+        border-radius: 10px;
+        padding: 24px 28px;
+      }
+      .panel-title {
+        font-size: 26px;
+        font-weight: 700;
+        margin-bottom: 18px;
+        letter-spacing: 0.5px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        height: 46px;
+        font-size: 25px;
+      }
+      .row .k { color: #A8A29A; font-size: 23px; }
+      .row .v { font-weight: 500; }
+
+      /* ---------- Atmosphere: embers + bokeh ---------- */
+      #atmo { z-index: 0; }
+      #atmo-inner { position: absolute; inset: 0; }
+      .ember {
+        position: absolute;
+        top: 0;
+        border-radius: 50%;
+        background: #ff7a18;
+        box-shadow: 0 0 8px 2px rgba(255, 122, 24, 0.8);
+        opacity: 0;
+      }
+      .bokeh {
+        position: absolute;
+        border-radius: 50%;
+        opacity: 0.06;
+      }
+      .bokeh.gold { background: radial-gradient(circle, rgba(255, 178, 77, 0.55), transparent 70%); }
+      .bokeh.violet { background: radial-gradient(circle, rgba(138, 107, 255, 0.55), transparent 70%); }
+      .bokeh.cyan { background: radial-gradient(circle, rgba(79, 195, 255, 0.55), transparent 70%); }
+      .bokeh.magenta { background: radial-gradient(circle, rgba(255, 106, 213, 0.55), transparent 70%); }
+
+      /* ---------- Divine blooms ---------- */
+      .bloom { z-index: 40; display: grid; place-items: center; }
+      .bloom-core {
+        width: 150%;
+        height: 150%;
+        border-radius: 50%;
+        mix-blend-mode: screen;
+        opacity: 0;
+      }
+      .bloom.gold .bloom-core { background: radial-gradient(circle, rgba(255, 214, 160, 0.9), rgba(255, 122, 24, 0.4) 32%, transparent 68%); }
+      .bloom.irid .bloom-core {
+        background: radial-gradient(circle,
+          rgba(255, 255, 255, 0.95),
+          rgba(138, 107, 255, 0.55) 24%,
+          rgba(79, 195, 255, 0.4) 44%,
+          rgba(255, 106, 213, 0.35) 62%,
+          transparent 76%);
+      }
+      .bloom.red .bloom-core { background: radial-gradient(circle, rgba(255, 130, 130, 0.85), rgba(255, 42, 42, 0.45) 38%, transparent 70%); }
+
+      /* ---------- Scene 1 ---------- */
+      #s1 .term {
+        position: absolute;
+        left: 120px;
+        top: 430px;
+        font-size: 60px;
+        white-space: nowrap;
+      }
+      #s1 .prompt { color: #ffb24d; font-weight: 700; margin-right: 18px; }
+      #s1 .ch { display: inline-block; opacity: 0; }
+      #s1 .cursor {
+        display: inline-block;
+        width: 30px;
+        height: 62px;
+        background: #ffb24d;
+        vertical-align: -8px;
+        margin-left: 8px;
+      }
+      #s1 .sub {
+        position: absolute;
+        left: 120px;
+        top: 560px;
+        font-size: 30px;
+        color: #A8A29A;
+        opacity: 0;
+        letter-spacing: 1px;
+      }
+
+      /* ---------- Scene 2: dashboard ---------- */
+      #s2 .dash-header {
+        position: absolute;
+        left: 120px;
+        right: 120px;
+        top: 120px;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        font-size: 40px;
+        opacity: 0;
+      }
+      #s2 .dash-header .name { font-weight: 800; }
+      #s2 .dash-header .sub { font-size: 26px; font-weight: 400; margin-left: 18px; }
+      #s2 .dash-header .meta { font-size: 24px; color: #A8A29A; }
+      #s2 .status-panel {
+        position: absolute;
+        left: 120px;
+        top: 250px;
+        width: 800px;
+        height: 330px;
+        opacity: 0;
+      }
+      #s2 .telemetry-panel {
+        position: absolute;
+        left: 1000px;
+        top: 250px;
+        width: 800px;
+        height: 330px;
+        opacity: 0;
+      }
+      #s2 .events-panel {
+        position: absolute;
+        left: 120px;
+        top: 640px;
+        width: 1680px;
+        height: 240px;
+        opacity: 0;
+      }
+      #s2 .ev-head, #s2 .ev-row {
+        display: flex;
+        gap: 28px;
+        height: 44px;
+        align-items: center;
+        font-size: 23px;
+      }
+      #s2 .ev-head { color: #A8A29A; font-size: 21px; border-bottom: 1px solid #26221c; }
+      #s2 .ev-row .t { width: 200px; color: #A8A29A; }
+      #s2 .ev-row .ty { width: 180px; font-weight: 700; }
+      #s2 .ev-row .d { flex: 1; }
+      #s2 .ev-row { opacity: 0; }
+      #s2-state { display: inline-block; }
+
+      /* ---------- Scene 3: monoliths ---------- */
+      #s3a .grid-host {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 440px;
+        display: flex;
+        justify-content: center;
+        gap: 16px;
+      }
+      #s3a .slab {
+        width: 128px;
+        height: 128px;
+        border-radius: 12px;
+        background: #0b0d12;
+        border: 1px solid #26262e;
+        opacity: 0;
+      }
+      #s3a .slab.hot {
+        background: rgba(255, 178, 77, 0.16);
+        border: 1px solid #ffb24d;
+        box-shadow: 0 0 34px rgba(255, 122, 24, 0.45), inset 0 0 24px rgba(255, 178, 77, 0.25);
+      }
+      #s3b .group-host {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 380px;
+        display: flex;
+        justify-content: center;
+        gap: 40px;
+        opacity: 0;
+      }
+      #s3b .slab-big {
+        width: 220px;
+        height: 220px;
+        border-radius: 16px;
+        background: rgba(255, 178, 77, 0.16);
+        border: 1px solid #ffb24d;
+        box-shadow: 0 0 34px rgba(255, 122, 24, 0.45), inset 0 0 24px rgba(255, 178, 77, 0.25);
+      }
+      #s3c .bus {
+        position: absolute;
+        left: 760px;
+        top: 500px;
+        width: 400px;
+        height: 2px;
+        background: #26262e;
+        opacity: 0;
+      }
+      #s3c .orb {
+        position: absolute;
+        left: 760px;
+        top: 489px;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: radial-gradient(circle, #ffe3b8, #ff7a18 60%, transparent 78%);
+        box-shadow: 0 0 30px rgba(255, 122, 24, 0.8);
+        opacity: 0;
+      }
+      #s3c .caption {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 720px;
+        text-align: center;
+        opacity: 0;
+      }
+      #s3c .caption .big { font-size: 46px; font-weight: 800; letter-spacing: 0.5px; }
+      #s3c .caption .small { font-size: 26px; color: #A8A29A; margin-top: 14px; }
+      #s3c .filelabel {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 420px;
+        text-align: center;
+        font-size: 24px;
+        color: #A8A29A;
+        opacity: 0;
+        letter-spacing: 1px;
+      }
+
+      /* ---------- Scene 4: conflict ---------- */
+      #s4 .conflict-panel {
+        position: absolute;
+        left: 240px;
+        top: 300px;
+        width: 1440px;
+        height: 220px;
+        border-color: #3a2323;
+        opacity: 0;
+      }
+      #s4 .redglow {
+        position: absolute;
+        inset: -40px;
+        background: radial-gradient(ellipse at center, rgba(255, 42, 42, 0.22), transparent 70%);
+        opacity: 0;
+      }
+      #s4 .cf-row {
+        position: relative;
+        display: flex;
+        gap: 28px;
+        align-items: center;
+        height: 110px;
+        font-size: 32px;
+      }
+      #s4 .cf-row .t { width: 280px; color: #A8A29A; font-size: 28px; }
+      #s4 .cf-row .ty { width: 240px; font-weight: 800; font-size: 34px; }
+      #s4 .cf-row .d { flex: 1; color: #f4f1ea; font-size: 28px; white-space: nowrap; }
+      #s4 .badge {
+        position: absolute;
+        right: 36px;
+        top: 55px;
+        font-size: 30px;
+        font-weight: 800;
+        color: #05060a;
+        background: #ffb24d;
+        padding: 12px 26px;
+        border-radius: 8px;
+        letter-spacing: 2px;
+        box-shadow: 0 0 40px rgba(255, 178, 77, 0.6);
+        opacity: 0;
+      }
+      #s4 .caption {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 640px;
+        text-align: center;
+        opacity: 0;
+      }
+      #s4 .caption .big { font-size: 46px; font-weight: 800; }
+      #s4 .caption .small { font-size: 25px; color: #A8A29A; margin-top: 14px; }
+
+      /* ---------- Scene 5: chips + punchline ---------- */
+      #s5 .chips {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 360px;
+        display: flex;
+        justify-content: center;
+        gap: 28px;
+      }
+      #s5 .chip {
+        background: rgba(12, 14, 19, 0.85);
+        border: 1px solid rgba(255, 178, 77, 0.55);
+        border-radius: 10px;
+        padding: 18px 34px;
+        font-size: 30px;
+        font-weight: 700;
+        color: #ffb24d;
+        box-shadow: 0 0 24px rgba(255, 122, 24, 0.25);
+        opacity: 0;
+      }
+      #s5 .final {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 560px;
+        text-align: center;
+        font-size: 100px;
+        font-weight: 800;
+        letter-spacing: 1px;
+        opacity: 0;
+      }
+      #s5 .final .d { color: #ffb24d; }
+      #s5 .cmd {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 760px;
+        text-align: center;
+        font-size: 28px;
+        color: #A8A29A;
+        opacity: 0;
+      }
+      #s5 .crystal {
+        position: absolute;
+        border-radius: 50%;
+        opacity: 0;
+      }
+      #s5 .crystal.violet { background: radial-gradient(circle, rgba(138, 107, 255, 0.6), transparent 70%); }
+      #s5 .crystal.cyan { background: radial-gradient(circle, rgba(79, 195, 255, 0.6), transparent 70%); }
+      #s5 .crystal.magenta { background: radial-gradient(circle, rgba(255, 106, 213, 0.6), transparent 70%); }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="deltasync-taste" data-start="0" data-width="1920" data-height="1080" data-duration="19.5">
+
+      <!-- Atmosphere: rising embers + drifting bokeh (full duration) -->
+      <section id="atmo" class="clip" data-start="0" data-duration="19.5" data-track-index="0" data-layout-allow-overflow>
+        <div id="atmo-inner">
+          <div id="ember-host"></div>
+          <div class="bokeh gold" style="width:380px;height:380px;left:120px;top:120px;"></div>
+          <div class="bokeh violet" style="width:300px;height:300px;left:1400px;top:600px;"></div>
+          <div class="bokeh cyan" style="width:260px;height:260px;left:700px;top:700px;"></div>
+          <div class="bokeh magenta" style="width:420px;height:420px;left:1500px;top:-80px;"></div>
+          <div class="bokeh gold" style="width:240px;height:240px;left:300px;top:850px;"></div>
+        </div>
+      </section>
+
+      <!-- Scene 1: the command (beats 0-5) -->
+      <section id="s1" class="clip" data-start="0" data-duration="2.73" data-track-index="1">
+        <div class="scene-content" id="s1c">
+          <div class="term">
+            <span class="prompt" id="s1-prompt">&gt;</span><span id="s1-cmd"></span><span class="cursor" id="s1-cursor"></span>
+          </div>
+          <div class="sub" id="s1-sub">peer-to-peer &middot; no cloud &middot; no server</div>
+        </div>
+      </section>
+
+      <!-- Scene 2: dashboard reveal (beats 5-13) -->
+      <section id="s2" class="clip" data-start="2.73" data-duration="4.36" data-track-index="2">
+        <div class="scene-content" id="s2c">
+          <div class="dash-header" id="s2-header">
+            <span><span class="name gold">DeltaSync</span><span class="sub dim">Peer-to-Peer Synchronization Engine</span></span>
+            <span class="meta">Cluster: ds-01 &nbsp;|&nbsp; Node: <span class="gold">a3f8-c9e2</span></span>
+          </div>
+          <div class="panel status-panel" id="s2-status">
+            <div class="panel-title dim">Engine Status</div>
+            <div class="row"><span class="k">Sync Path</span><span class="v">./my-folder</span></div>
+            <div class="row"><span class="k">State</span><span class="v gold" style="font-weight:800;"><span id="s2-state">SYNCING</span></span></div>
+            <div class="row"><span class="k">Connected Peers</span><span class="v gold" style="font-weight:700;">3 active</span></div>
+            <div class="row"><span class="k">Prometheus Endpoint</span><span class="v dim">127.0.0.1:9464/metrics</span></div>
+          </div>
+          <div class="panel telemetry-panel" id="s2-telemetry">
+            <div class="panel-title gold">Telemetry &amp; Performance</div>
+            <div class="row"><span class="k">Transferred (In/Out)</span><span class="v"><span id="s2-in">0.00</span> MB / <span id="s2-out">0.00</span> MB</span></div>
+            <div class="row"><span class="k">Throughput</span><span class="v gold" style="font-weight:700;"><span id="s2-thru">0.0</span> KB/s</span></div>
+            <div class="row"><span class="k">FastCDC Dedup Saved</span><span class="v gold" style="font-weight:700;"><span id="s2-dedup">0.00</span> MB</span></div>
+            <div class="row"><span class="k">Bandwidth Savings</span><span class="v gold" style="font-weight:700;"><span id="s2-save">0.0</span>%</span></div>
+            <div class="row"><span class="k">Conflicts Resolved</span><span class="v">0 (ADR-0001)</span></div>
+            <div class="row"><span class="k">Sync Latency (p95)</span><span class="v"><span id="s2-p95">0.0</span> ms (12 cycles)</span></div>
+          </div>
+          <div class="panel events-panel" id="s2-events">
+            <div class="panel-title dim">Recent Sync Events</div>
+            <div class="ev-head"><span style="width:200px;">Time</span><span style="width:180px;">Type</span><span>Details</span></div>
+            <div class="ev-row" id="s2-ev1"><span class="t">12:04:12.001</span><span class="ty">PEER</span><span class="d">peer 7f3a-22d1 joined cluster</span></div>
+            <div class="ev-row" id="s2-ev2"><span class="t">12:04:13.442</span><span class="ty gold">SYNC</span><span class="d">chunk 012/064 transferred</span></div>
+            <div class="ev-row" id="s2-ev3"><span class="t">12:04:14.810</span><span class="ty gold">SYNC</span><span class="d">chunk 013/064 transferred</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scene 3a: hero macro — the file (beats 13-16) -->
+      <section id="s3a" class="clip" data-start="7.09" data-duration="1.65" data-track-index="3">
+        <div class="scene-content" id="s3ac">
+          <div class="grid-host" id="s3a-grid"></div>
+        </div>
+      </section>
+
+      <!-- Scene 3b: the delta, close (beats 16-18) -->
+      <section id="s3b" class="clip" data-start="8.74" data-duration="1.09" data-track-index="4">
+        <div class="scene-content" id="s3bc">
+          <div class="group-host" id="s3b-group">
+            <div class="slab-big" id="s3b-s1"></div>
+            <div class="slab-big" id="s3b-s2"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scene 3c: ascension — packet flight + caption (beats 18-22) -->
+      <section id="s3c" class="clip" data-start="9.83" data-duration="2.19" data-track-index="5">
+        <div class="scene-content" id="s3cc">
+          <div class="bus" id="s3-bus"></div>
+          <div class="filelabel" id="s3-filelabel">main.rs &middot; 2 of 8 chunks changed</div>
+          <div class="orb" id="s3-orb1"></div>
+          <div class="orb" id="s3-orb2"></div>
+          <div class="caption" id="s3-caption">
+            <div class="big">Only the <span class="gold">delta</span> moves.</div>
+            <div class="small">FastCDC chunking &middot; 47% less bandwidth</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scene 4: conflict, resolved (beats 22-28) -->
+      <section id="s4" class="clip" data-start="12.02" data-duration="3.27" data-track-index="6">
+        <div class="scene-content" id="s4c">
+          <div class="panel conflict-panel" id="s4-panel">
+            <div class="redglow" id="s4-glow"></div>
+            <div class="panel-title dim">Recent Sync Events</div>
+            <div class="cf-row" id="s4-row">
+              <span class="t">12:04:31.204</span>
+              <span class="ty red">CONFLICT</span>
+              <span class="d">main.rs:142 &mdash; vector clock divergence (ADR-0001)</span>
+            </div>
+            <div class="badge" id="s4-badge">RESOLVED</div>
+          </div>
+          <div class="caption" id="s4-caption">
+            <div class="big">Two machines edited the same line. <span class="gold">It chose.</span></div>
+            <div class="small">BGP-4 tie-breaking &middot; RFC 4271 &sect;6.8</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scene 5: chips + punchline (beats 28-35) -->
+      <section id="s5" class="clip" data-start="15.29" data-duration="4.21" data-track-index="7">
+        <div class="scene-content" id="s5c">
+          <div class="chips">
+            <div class="chip" id="s5-chip1">TLS 1.3</div>
+            <div class="chip" id="s5-chip2">Merkle tree</div>
+            <div class="chip" id="s5-chip3">FastCDC</div>
+            <div class="chip" id="s5-chip4">Chaos-tested</div>
+          </div>
+          <div class="final" id="s5-final"><span class="d">Delta</span> in. Conflict out.</div>
+          <div class="cmd" id="s5-cmd">deltasync sync ./my-folder --port 4242</div>
+          <div class="crystal violet" id="s5-x1" style="width:90px;height:90px;left:420px;top:300px;"></div>
+          <div class="crystal cyan" id="s5-x2" style="width:60px;height:60px;left:900px;top:240px;"></div>
+          <div class="crystal magenta" id="s5-x3" style="width:75px;height:75px;left:1380px;top:320px;"></div>
+          <div class="crystal violet" id="s5-x4" style="width:50px;height:50px;left:700px;top:180px;"></div>
+          <div class="crystal cyan" id="s5-x5" style="width:110px;height:110px;left:1150px;top:420px;"></div>
+          <div class="crystal magenta" id="s5-x6" style="width:55px;height:55px;left:560px;top:480px;"></div>
+        </div>
+      </section>
+
+      <!-- Divine blooms (beat-locked transitions) -->
+      <div class="clip bloom gold" id="bloom-wrap-1" data-start="2.70" data-duration="0.5" data-track-index="30"><div class="bloom-core" id="bloom-1"></div></div>
+      <div class="clip bloom gold" id="bloom-wrap-2" data-start="7.06" data-duration="0.5" data-track-index="31"><div class="bloom-core" id="bloom-2"></div></div>
+      <div class="clip bloom red" id="bloom-wrap-red" data-start="12.00" data-duration="0.35" data-track-index="32"><div class="bloom-core" id="bloom-red"></div></div>
+      <div class="clip bloom irid" id="bloom-wrap-3" data-start="13.08" data-duration="0.7" data-track-index="33"><div class="bloom-core" id="bloom-3"></div></div>
+      <div class="clip bloom gold" id="bloom-wrap-4" data-start="15.26" data-duration="0.5" data-track-index="34"><div class="bloom-core" id="bloom-4"></div></div>
+      <div class="clip bloom gold" id="bloom-wrap-5" data-start="17.44" data-duration="0.8" data-track-index="35"><div class="bloom-core" id="bloom-5"></div></div>
+      <div class="clip bloom irid" id="bloom-wrap-6" data-start="18.54" data-duration="0.96" data-track-index="36"><div class="bloom-core" id="bloom-6"></div></div>
+
+      <!-- Audio: music bed -->
+      <audio id="bg-music" data-start="0" data-duration="19.5" data-track-index="10" data-volume="0.32" src="assets/music/happy-beats-business-moves-vol-12-by-ende-dot-app.mp3"></audio>
+
+      <!-- SFX: typing ticks -->
+      <audio id="sfx-k1" data-start="0.30" data-duration="0.15" data-track-index="11" data-volume="0.5" src="assets/sfx/keyboard/keypress-003.wav"></audio>
+      <audio id="sfx-k2" data-start="0.51" data-duration="0.15" data-track-index="12" data-volume="0.5" src="assets/sfx/keyboard/keypress-007.wav"></audio>
+      <audio id="sfx-k3" data-start="0.72" data-duration="0.15" data-track-index="13" data-volume="0.5" src="assets/sfx/keyboard/keypress-011.wav"></audio>
+      <audio id="sfx-k4" data-start="0.93" data-duration="0.15" data-track-index="14" data-volume="0.5" src="assets/sfx/keyboard/keypress-015.wav"></audio>
+      <audio id="sfx-k5" data-start="1.14" data-duration="0.15" data-track-index="15" data-volume="0.5" src="assets/sfx/keyboard/keypress-019.wav"></audio>
+      <audio id="sfx-k6" data-start="1.35" data-duration="0.15" data-track-index="16" data-volume="0.5" src="assets/sfx/keyboard/keypress-023.wav"></audio>
+      <audio id="sfx-k7" data-start="1.56" data-duration="0.15" data-track-index="17" data-volume="0.5" src="assets/sfx/keyboard/keypress-027.wav"></audio>
+      <audio id="sfx-k8" data-start="1.77" data-duration="0.15" data-track-index="18" data-volume="0.5" src="assets/sfx/keyboard/keypress-005.wav"></audio>
+      <audio id="sfx-k9" data-start="1.98" data-duration="0.15" data-track-index="19" data-volume="0.5" src="assets/sfx/keyboard/keypress-009.wav"></audio>
+      <audio id="sfx-k10" data-start="2.19" data-duration="0.15" data-track-index="20" data-volume="0.5" src="assets/sfx/keyboard/keypress-031.wav"></audio>
+      <!-- SFX: dashboard lands -->
+      <audio id="sfx-drop" data-start="3.27" data-duration="0.11" data-track-index="21" data-volume="0.55" src="assets/sfx/interface/drop_001.ogg"></audio>
+      <!-- SFX: packet flight -->
+      <audio id="sfx-pkt1" data-start="9.83" data-duration="0.10" data-track-index="22" data-volume="0.4" src="assets/sfx/interface/click_001.ogg"></audio>
+      <audio id="sfx-pkt2" data-start="10.37" data-duration="0.10" data-track-index="23" data-volume="0.4" src="assets/sfx/interface/click_001.ogg"></audio>
+      <!-- SFX: conflict shock -->
+      <audio id="sfx-glitch" data-start="12.00" data-duration="0.05" data-track-index="24" data-volume="0.5" src="assets/sfx/interface/glitch_002.ogg"></audio>
+      <!-- SFX: resolved ding -->
+      <audio id="sfx-resolved" data-start="13.08" data-duration="0.26" data-track-index="25" data-volume="0.7" src="assets/sfx/casino/chips-collide-1.ogg"></audio>
+      <!-- SFX: final bell -->
+      <audio id="sfx-bell" data-start="17.44" data-duration="1.5" data-track-index="26" data-volume="0.8" src="assets/sfx/impact/impactBell_heavy_000.ogg"></audio>
+    </div>
+
+    <script>
+      // Seeded PRNG (deterministic embers + float phases)
+      function lcg(seed) {
+        var s = seed >>> 0;
+        return function () {
+          s = (s * 1664525 + 1013904223) >>> 0;
+          return s / 4294967296;
+        };
+      }
+      var rnd = lcg(1337);
+
+      // Build typed-command characters
+      (function () {
+        var cmd = "deltasync sync ./my-folder";
+        var wrap = document.getElementById("s1-cmd");
+        var spans = [];
+        for (var i = 0; i < cmd.length; i++) {
+          var sp = document.createElement("span");
+          sp.className = "ch";
+          sp.textContent = cmd[i] === " " ? "\u00A0" : cmd[i];
+          wrap.appendChild(sp);
+          spans.push(sp);
+        }
+        window.__s1Spans = spans;
+      })();
+
+      // Build the 8 monolith slabs (slabs 2 and 5 are the delta)
+      (function () {
+        var host = document.getElementById("s3a-grid");
+        for (var i = 0; i < 8; i++) {
+          var c = document.createElement("div");
+          c.className = "slab" + (i === 1 || i === 4 ? " hot" : "");
+          host.appendChild(c);
+        }
+      })();
+
+      // Build rising embers (16, seeded)
+      (function () {
+        var host = document.getElementById("ember-host");
+        for (var i = 0; i < 16; i++) {
+          var e = document.createElement("div");
+          e.className = "ember";
+          var size = 3 + rnd() * 5;
+          e.style.width = size + "px";
+          e.style.height = size + "px";
+          e.style.left = 40 + rnd() * 1840 + "px";
+          host.appendChild(e);
+        }
+      })();
+
+      var tl = gsap.timeline({ paused: true });
+
+      // ---------- Atmosphere: embers rise, bokeh drifts ----------
+      (function () {
+        var embers = document.querySelectorAll("#ember-host .ember");
+        embers.forEach(function (el, i) {
+          var dur = 7 + rnd() * 6;
+          var delay = rnd() * 10;
+          var peak = 0.3 + rnd() * 0.45;
+          tl.fromTo(el, { y: 1150 }, { y: -120, duration: dur, ease: "none" }, delay);
+          tl.to(el, {
+            keyframes: [
+              { opacity: 0, duration: 0.01 },
+              { opacity: peak, duration: dur * 0.3 },
+              { opacity: 0, duration: dur * 0.7 }
+            ],
+            ease: "none"
+          }, delay);
+        });
+        var bokehs = document.querySelectorAll(".bokeh");
+        bokehs.forEach(function (el, i) {
+          tl.to(el, {
+            x: (i % 2 === 0 ? 1 : -1) * (40 + rnd() * 50),
+            y: (i % 3 === 0 ? 1 : -1) * (30 + rnd() * 40),
+            duration: 7 + i * 1.3,
+            yoyo: true,
+            repeat: 3,
+            ease: "sine.inOut"
+          }, 0);
+        });
+        tl.to("#atmo-inner", { opacity: 0.85, duration: 5.46, yoyo: true, repeat: 3, ease: "sine.inOut" }, 0);
+      })();
+
+      // ---------- Scene 1: the command (0 - 2.73) ----------
+      tl.fromTo("#s1-prompt", { opacity: 0 }, { opacity: 1, duration: 0.15 }, 0.15);
+      tl.fromTo("#s1-cursor", { opacity: 0 }, { opacity: 1, duration: 0.15 }, 0.25);
+      window.__s1Spans.forEach(function (el, i) {
+        tl.set(el, { opacity: 1 }, 0.3 + i * 0.07);
+      });
+      tl.fromTo("#s1-sub", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }, 1.64);
+      tl.to("#s1-cursor", { opacity: 0, duration: 0.22, yoyo: true, repeat: 3 }, 2.2);
+      tl.to("#s1c", { opacity: 0, duration: 0.25, ease: "power1.in" }, 2.45);
+
+      // ---------- Scene 2: dashboard reveal (2.73 - 7.09) ----------
+      tl.fromTo("#s2-header", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out" }, 2.85);
+      tl.fromTo("#s2-status", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out" }, 3.27);
+      tl.fromTo("#s2-telemetry", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out" }, 3.82);
+      tl.fromTo("#s2-events", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out" }, 4.39);
+
+      function counter(id, target, decimals, start, dur) {
+        var obj = { v: 0 };
+        var el = document.getElementById(id);
+        tl.to(obj, {
+          v: target,
+          duration: dur,
+          ease: "power1.out",
+          onUpdate: function () { el.textContent = obj.v.toFixed(decimals); },
+          onComplete: function () { el.textContent = target.toFixed(decimals); }
+        }, start);
+      }
+      counter("s2-in", 2.41, 2, 4.0, 2.3);
+      counter("s2-out", 1.87, 2, 4.0, 2.3);
+      counter("s2-thru", 812.3, 1, 4.1, 2.2);
+      counter("s2-dedup", 1.94, 2, 4.0, 2.3);
+      counter("s2-save", 47.2, 1, 4.1, 2.2);
+      counter("s2-p95", 18.4, 1, 4.2, 2.1);
+
+      // color-pop: SYNCING punches gold on the downbeat
+      // beat-locked: 4.91s (beat 9)
+      tl.fromTo("#s2-state", { scale: 1.28 }, { scale: 1, duration: 0.35, ease: "power3.out" }, 4.91);
+
+      tl.fromTo("#s2-ev1", { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: 0.3 }, 4.91);
+      tl.fromTo("#s2-ev2", { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: 0.3 }, 5.34);
+      tl.fromTo("#s2-ev3", { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: 0.3 }, 6.0);
+      tl.to("#s2c", { opacity: 0, duration: 0.25, ease: "power1.in" }, 6.8);
+
+      // ---------- Scene 3a: hero macro — the file (7.09 - 8.74) ----------
+      (function () {
+        var slabs = document.querySelectorAll("#s3a-grid .slab");
+        slabs.forEach(function (el, i) {
+          tl.fromTo(el, { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 7.09 + i * 0.07);
+          tl.fromTo(el, { y: 0 }, { y: -12, duration: 2.2 + i * 0.17, yoyo: true, repeat: 1, ease: "sine.inOut", immediateRender: false }, 7.5 + i * 0.06);
+        });
+      })();
+
+      // ---------- Scene 3b: the delta, close (8.74 - 9.83) ----------
+      // beat-locked: 8.74s strong cue
+      tl.fromTo("#s3b-group", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.35, ease: "power3.out" }, 8.74);
+      tl.to("#s3b-group", { scale: 1.07, duration: 0.16, yoyo: true, repeat: 1, ease: "power1.inOut" }, 9.15);
+      tl.to("#s3b-s1", { boxShadow: "0 0 80px rgba(255, 122, 24, 0.75), inset 0 0 40px rgba(255, 178, 77, 0.4)", duration: 0.4, yoyo: true, repeat: 3, ease: "sine.inOut" }, 8.8);
+      tl.to("#s3b-s2", { boxShadow: "0 0 80px rgba(255, 122, 24, 0.75), inset 0 0 40px rgba(255, 178, 77, 0.4)", duration: 0.4, yoyo: true, repeat: 3, ease: "sine.inOut" }, 8.9);
+
+      // ---------- Scene 3c: ascension (9.83 - 12.02) ----------
+      tl.fromTo("#s3-bus", { opacity: 0 }, { opacity: 1, duration: 0.3 }, 9.83);
+      tl.fromTo("#s3-orb1", { opacity: 0 }, { opacity: 1, duration: 0.1 }, 9.83);
+      tl.to("#s3-orb1", { x: 380, duration: 0.8, ease: "power2.in" }, 9.93);
+      tl.to("#s3-orb1", { opacity: 0, duration: 0.12 }, 10.68);
+      tl.fromTo("#s3-orb2", { opacity: 0 }, { opacity: 1, duration: 0.1 }, 10.37);
+      tl.to("#s3-orb2", { x: 380, duration: 0.8, ease: "power2.in" }, 10.47);
+      tl.to("#s3-orb2", { opacity: 0, duration: 0.12 }, 11.22);
+      tl.fromTo("#s3-filelabel", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 9.83);
+      // beat-grid: 10.37s (beat 19) — readability floor outranks the 10.93 strong cue
+      tl.fromTo("#s3-caption", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 10.37);
+
+      // ---------- Scene 4: conflict, resolved (12.02 - 15.29) ----------
+      tl.fromTo("#s4-panel", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out" }, 12.02);
+      tl.fromTo("#s4-row", { opacity: 0, x: -24 }, { opacity: 1, x: 0, duration: 0.35, ease: "power2.out" }, 12.15);
+      tl.to("#s4-glow", { opacity: 0.5, duration: 0.5, yoyo: true, repeat: 1, ease: "sine.inOut" }, 12.4);
+      // beat-locked: 13.11s strong cue
+      tl.fromTo("#s4-badge", { opacity: 0, scale: 1.6 }, { opacity: 1, scale: 1, duration: 0.28, ease: "power3.out" }, 13.11);
+      tl.fromTo("#s4-caption", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 13.64);
+      tl.to("#s4c", { opacity: 0, duration: 0.25, ease: "power1.in" }, 15.0);
+
+      // ---------- Scene 5: chips + punchline (15.29 - 19.5) ----------
+      // beat-grid: chips snap to beats 28-31 (15.29 / 15.84 / 16.38 / 16.93)
+      tl.fromTo("#s5-chip1", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 15.29);
+      tl.fromTo("#s5-chip2", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 15.84);
+      tl.fromTo("#s5-chip3", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 16.38);
+      tl.fromTo("#s5-chip4", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 16.93);
+      // beat-locked: 17.47s strong cue
+      tl.fromTo("#s5-final", { opacity: 0, scale: 1.06 }, { opacity: 1, scale: 1, duration: 0.45, ease: "power3.out" }, 17.47);
+      tl.fromTo("#s5-cmd", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 18.02);
+      // crystalline dissolve on strong cue 18.56
+      ["s5-x1", "s5-x2", "s5-x3", "s5-x4", "s5-x5", "s5-x6"].forEach(function (id, i) {
+        tl.fromTo("#" + id, { opacity: 0, y: 60 }, { opacity: 0.3, y: -80, duration: 1.2, ease: "sine.inOut" }, 18.54 + i * 0.06);
+      });
+      tl.to("#s5c", { opacity: 0, duration: 0.4 }, 19.05);
+
+      // ---------- Divine blooms ----------
+      function bloom(id, start, fin, fout) {
+        tl.fromTo(id, { opacity: 0 }, { opacity: 1, duration: fin }, start);
+        tl.to(id, { opacity: 0, duration: fout }, start + fin);
+      }
+      bloom("#bloom-1", 2.7, 0.12, 0.38);
+      bloom("#bloom-2", 7.06, 0.12, 0.38);
+      bloom("#bloom-red", 12.0, 0.05, 0.3);
+      bloom("#bloom-3", 13.08, 0.25, 0.45);
+      bloom("#bloom-4", 15.26, 0.12, 0.38);
+      bloom("#bloom-5", 17.44, 0.15, 0.65);
+      bloom("#bloom-6", 18.54, 0.3, 0.4);
+
+      window.__timelines["deltasync-taste"] = tl;
+    </script>
+  </body>
+</html>

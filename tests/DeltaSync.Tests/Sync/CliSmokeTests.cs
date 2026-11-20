@@ -6,6 +6,7 @@ using Xunit;
 
 namespace DeltaSync.Tests.Sync;
 
+[Collection("ConsoleTests")]
 public class CliSmokeTests
 {
     [Fact]
