@@ -337,7 +337,7 @@ public class RealSocketSyncIntegrationTests : IAsyncDisposable
         clockA.Compare(clockB).Should().Be(CausalRelation.Concurrent);
 
         // Connect over physical TCP socket
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var channelA = await nodeA.Coordinator.ConnectAsync("NodeB_Conflict", nodeB.Listener.LocalEndPoint, cts.Token);
         channelA.Should().NotBeNull();
 

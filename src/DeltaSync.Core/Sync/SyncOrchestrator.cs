@@ -195,20 +195,25 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) == 1, this);
         ArgumentNullException.ThrowIfNull(channel);
 
+        if (_channels.TryGetValue(channel, out _))
+        {
+            return new ChannelUnsubscriber(this, channel);
+        }
+
         var attachment = _wireProtocol.AttachChannel(channel);
         var entry = new ChannelEntry(channel, attachment);
 
-        _channels.AddOrUpdate(channel, entry, (key, existing) =>
+        if (!_channels.TryAdd(channel, entry))
         {
-            // CR-01 fix: ValueTask must be awaited; schedule cleanup on thread pool so we don't block the ConcurrentDictionary factory delegate.
+            // Already added concurrently; release this attachment
             _ = Task.Run(async () =>
             {
-                try { await existing.WireAttachment.DisposeAsync().ConfigureAwait(false); }
-                catch { /* best-effort */ }
-                finally { existing.SyncLock.Dispose(); }
+                try { await attachment.DisposeAsync().ConfigureAwait(false); }
+                catch { }
+                finally { entry.SyncLock.Dispose(); }
             });
-            return entry;
-        });
+            return new ChannelUnsubscriber(this, channel);
+        }
 
         // Trigger immediate anti-entropy sync upon connection.
         // M-04 fix: capture the token BEFORE entering the lambda; _runCts is nulled during

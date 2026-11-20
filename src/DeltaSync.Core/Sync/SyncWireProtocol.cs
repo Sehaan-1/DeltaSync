@@ -44,12 +44,18 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) == 1, this);
         ArgumentNullException.ThrowIfNull(channel);
 
-        var session = _sessions.GetOrAdd(channel, ch =>
-        {
-            var s = new ChannelSession(ch);
-            s.StartListening(this);
-            return s;
-        });
+        var session = _sessions.AddOrUpdate(channel,
+            ch =>
+            {
+                var s = new ChannelSession(ch);
+                s.StartListening(this);
+                return s;
+            },
+            (ch, existing) =>
+            {
+                existing.AddRef();
+                return existing;
+            });
 
         return new ChannelAttachment(this, session);
     }
@@ -520,10 +526,22 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
         public Task? ListenTask { get; private set; }
 
         private int _disposed;
+        private int _refCount = 1;
 
         public ChannelSession(IPeerTransportChannel channel)
         {
             Channel = channel;
+        }
+
+        public void AddRef() => Interlocked.Increment(ref _refCount);
+
+        public async ValueTask ReleaseRefAsync(SyncWireProtocol protocol)
+        {
+            if (Interlocked.Decrement(ref _refCount) <= 0)
+            {
+                protocol._sessions.TryRemove(Channel, out _);
+                await DisposeAsync().ConfigureAwait(false);
+            }
         }
 
         public void StartListening(SyncWireProtocol protocol)
@@ -627,8 +645,7 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
         {
             if (Interlocked.Exchange(ref _detached, 1) == 0)
             {
-                _protocol._sessions.TryRemove(_session.Channel, out _);
-                await _session.DisposeAsync().ConfigureAwait(false);
+                await _session.ReleaseRefAsync(_protocol).ConfigureAwait(false);
             }
         }
     }
