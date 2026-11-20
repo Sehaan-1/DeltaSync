@@ -65,6 +65,7 @@ public class MultiProcessCliSyncIntegrationTests
         string nestedRel = Path.Combine("docs", "deep", "architecture.md");
         string nestedFullA = Path.Combine(harness.NodeA.WorkingDirectory, nestedRel);
         Directory.CreateDirectory(Path.GetDirectoryName(nestedFullA)!);
+        await Task.Delay(100);
         byte[] nestedBytes = Encoding.UTF8.GetBytes("# Multi-Process Synchronization Architecture\nVerified over physical OS TCP sockets.");
         await File.WriteAllBytesAsync(nestedFullA, nestedBytes);
         expectedHashes[nestedRel] = Convert.ToHexString(SHA256.HashData(nestedBytes));
@@ -73,6 +74,7 @@ public class MultiProcessCliSyncIntegrationTests
         string binaryRel = Path.Combine("data", "random.bin");
         string binaryFullA = Path.Combine(harness.NodeA.WorkingDirectory, binaryRel);
         Directory.CreateDirectory(Path.GetDirectoryName(binaryFullA)!);
+        await Task.Delay(100);
         byte[] binaryBytes = new byte[32 * 1024]; // 32 KB
         new Random(1337).NextBytes(binaryBytes);
         await File.WriteAllBytesAsync(binaryFullA, binaryBytes);

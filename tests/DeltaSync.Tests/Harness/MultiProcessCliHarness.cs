@@ -412,6 +412,7 @@ public sealed class MultiProcessCliHarness : IAsyncDisposable
     {
         var resolvedTimeout = timeout ?? TimeSpan.FromSeconds(5.0);
         var sw = Stopwatch.StartNew();
+        int lastCount = 0;
 
         while (sw.Elapsed < resolvedTimeout)
         {
@@ -429,6 +430,7 @@ public sealed class MultiProcessCliHarness : IAsyncDisposable
                 {
                     int count = Directory.EnumerateFiles(targetDirectory, "*", SearchOption.AllDirectories)
                         .Count(f => !f.Contains(".deltasync"));
+                    lastCount = count;
                     if (count >= expectedCount)
                     {
                         return count;
@@ -444,7 +446,7 @@ public sealed class MultiProcessCliHarness : IAsyncDisposable
 
         string extra = (nodeContext != null ? $" Output ({nodeContext.Name}): {nodeContext.GetAllOutput()}" : string.Empty) +
                        (otherNodeContext != null ? $" | Output ({otherNodeContext.Name}): {otherNodeContext.GetAllOutput()}" : string.Empty);
-        throw new TimeoutException($"Directory {targetDirectory} failed to reach {expectedCount} files within {resolvedTimeout.TotalSeconds:F1}s.{extra}");
+        throw new TimeoutException($"Directory {targetDirectory} failed to reach {expectedCount} files (current count: {lastCount}) within {resolvedTimeout.TotalSeconds:F1}s.{extra}");
     }
 
     /// <summary>

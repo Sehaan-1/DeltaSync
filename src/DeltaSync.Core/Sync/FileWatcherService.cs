@@ -241,10 +241,26 @@ public sealed class FileWatcherService : IFileWatcherService
             return;
         }
 
-        // If it is a directory and not a file, ignore direct creation/modification
-        // File events within subdirectories are captured by IncludeSubdirectories
+        // If it is a directory and not a file, enumerate and enqueue any nested files
+        // that may have been created concurrently before OS watch hooks fully attached (e.g. Linux inotify).
         if (Directory.Exists(fullPath) && action != DebounceAction.Deleted)
         {
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(fullPath, "*", SearchOption.AllDirectories))
+                {
+                    if (TryResolveRelativePath(file, out string? childRel) &&
+                        !LocalFileIngestor.IsExcludedPath(childRel!) &&
+                        !IsPathSuppressed(childRel!))
+                    {
+                        EnqueueEventInternal(childRel!, DebounceAction.CreatedOrChanged, null);
+                    }
+                }
+            }
+            catch
+            {
+                // Best effort directory enumeration
+            }
             return;
         }
 
