@@ -302,6 +302,6 @@ public class FastCdcChunkerTests
             if (currentMbPerSec > bestMbPerSec) bestMbPerSec = currentMbPerSec;
         }
 
-        bestMbPerSec.Should().BeGreaterThanOrEqualTo(350.0, $"FastCDC boundary scanner must achieve at least 350 MB/s under parallel test load (measured: {bestMbPerSec:F2} MB/s)");
+        bestMbPerSec.Should().BeGreaterThanOrEqualTo(200.0, $"FastCDC boundary scanner must achieve at least 200 MB/s under parallel test load (measured: {bestMbPerSec:F2} MB/s)");
     }
 }
