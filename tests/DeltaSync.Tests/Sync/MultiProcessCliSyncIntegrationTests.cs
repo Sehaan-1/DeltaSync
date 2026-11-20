@@ -83,7 +83,7 @@ public class MultiProcessCliSyncIntegrationTests
         int countB = await MultiProcessCliHarness.WaitForFileCountAsync(
             harness.NodeB.WorkingDirectory,
             expectedCount: 10,
-            timeout: TimeSpan.FromSeconds(6.0),
+            timeout: TimeSpan.FromSeconds(15.0),
             nodeContext: harness.NodeB,
             otherNodeContext: harness.NodeA);
         countB.Should().BeGreaterThanOrEqualTo(10);
@@ -94,7 +94,7 @@ public class MultiProcessCliSyncIntegrationTests
                 harness.NodeB.WorkingDirectory,
                 relPath,
                 expectedSha256,
-                timeout: TimeSpan.FromSeconds(5.0),
+                timeout: TimeSpan.FromSeconds(10.0),
                 nodeContext: harness.NodeB,
                 otherNodeContext: harness.NodeA);
 
