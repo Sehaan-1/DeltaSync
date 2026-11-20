@@ -42,37 +42,44 @@ public class PeerConnectionCoordinatorTests
         var collisionDecisionsA = new List<(string Remote, CollisionDecision Decision)>();
         var collisionDecisionsB = new List<(string Remote, CollisionDecision Decision)>();
 
+        var dialerStartedA = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dialerStartedB = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         // Set up cross-wired dialers
         coordinatorA = new PeerConnectionCoordinator(
             clusterId,
             peerIdA,
             listenPort: 5001,
-            dialer: (remoteId, _, _) =>
+            dialer: async (remoteId, _, _) =>
             {
                 var (localOut, remoteIn) = InMemoryTransportChannel.CreateConnectedPair(peerIdA, remoteId, clusterId);
                 alphaOutboundCreated = localOut;
+                dialerStartedA.TrySetResult();
+                await dialerStartedB.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 _ = Task.Run(async () =>
                 {
                     await Task.Yield();
                     await coordinatorB!.AcceptConnectionAsync(remoteIn);
                 });
-                return ValueTask.FromResult<IPeerTransportChannel>(localOut);
+                return (IPeerTransportChannel)localOut;
             });
 
         coordinatorB = new PeerConnectionCoordinator(
             clusterId,
             peerIdB,
             listenPort: 5002,
-            dialer: (remoteId, _, _) =>
+            dialer: async (remoteId, _, _) =>
             {
                 var (localOut, remoteIn) = InMemoryTransportChannel.CreateConnectedPair(peerIdB, remoteId, clusterId);
                 betaOutboundCreated = localOut;
+                dialerStartedB.TrySetResult();
+                await dialerStartedA.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 _ = Task.Run(async () =>
                 {
                     await Task.Yield();
                     await coordinatorA!.AcceptConnectionAsync(remoteIn);
                 });
-                return ValueTask.FromResult<IPeerTransportChannel>(localOut);
+                return (IPeerTransportChannel)localOut;
             });
 
         coordinatorA.CollisionResolved += (_, e) =>

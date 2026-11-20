@@ -608,24 +608,15 @@ public sealed class SyncWireProtocol : ISyncWireProtocol
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-                Cts.Cancel();
-                Cts.Dispose();
+                try { Cts.Cancel(); } catch { }
                 SendLock.Dispose();
             }
         }
 
-        public async ValueTask DisposeAsync()
+        public ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) == 0)
-            {
-                Cts.Cancel();
-                if (ListenTask != null)
-                {
-                    try { await ListenTask.ConfigureAwait(false); } catch { }
-                }
-                Cts.Dispose();
-                SendLock.Dispose();
-            }
+            Dispose();
+            return ValueTask.CompletedTask;
         }
     }
 

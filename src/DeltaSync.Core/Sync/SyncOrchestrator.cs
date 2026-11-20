@@ -197,7 +197,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
 
         if (_channels.TryGetValue(channel, out _))
         {
-            return new ChannelUnsubscriber(this, channel);
+            return new ChannelUnsubscriber(this, channel, isShared: true);
         }
 
         var attachment = _wireProtocol.AttachChannel(channel);
@@ -212,7 +212,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                 catch { }
                 finally { entry.SyncLock.Dispose(); }
             });
-            return new ChannelUnsubscriber(this, channel);
+            return new ChannelUnsubscriber(this, channel, isShared: true);
         }
 
         // Trigger immediate anti-entropy sync upon connection.
@@ -238,23 +238,27 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
             });
         }
 
-        return new ChannelUnsubscriber(this, channel);
+        return new ChannelUnsubscriber(this, channel, isShared: false);
     }
 
     private sealed class ChannelUnsubscriber : IAsyncDisposable
     {
         private readonly SyncOrchestrator _orchestrator;
         private readonly IPeerTransportChannel _channel;
+        private readonly bool _isShared;
         private int _unsubscribed;
 
-        public ChannelUnsubscriber(SyncOrchestrator orchestrator, IPeerTransportChannel channel)
+        public ChannelUnsubscriber(SyncOrchestrator orchestrator, IPeerTransportChannel channel, bool isShared = false)
         {
             _orchestrator = orchestrator;
             _channel = channel;
+            _isShared = isShared;
         }
 
         public async ValueTask DisposeAsync()
         {
+            if (_isShared) return;
+
             if (Interlocked.CompareExchange(ref _unsubscribed, 1, 0) == 0)
             {
                 if (_orchestrator._channels.TryRemove(_channel, out var entry))
