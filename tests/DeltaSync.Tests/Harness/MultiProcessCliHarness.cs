@@ -448,6 +448,41 @@ public sealed class MultiProcessCliHarness : IAsyncDisposable
     }
 
     /// <summary>
+    /// Awaits until both Node A and Node B have logged peer connection establishment,
+    /// ensuring the bidirectional P2P channel is attached and ready.
+    /// </summary>
+    public async Task WaitForPeerConnectionAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+    {
+        var resolvedTimeout = timeout ?? TimeSpan.FromSeconds(10.0);
+        var sw = Stopwatch.StartNew();
+
+        while (sw.Elapsed < resolvedTimeout)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (NodeA.HasExited)
+            {
+                throw new InvalidOperationException($"Node A exited prematurely with code {NodeA.ExitCode}. Stderr: {NodeA.GetErrorOutput()}{Environment.NewLine}Stdout: {NodeA.GetAllOutput()}");
+            }
+            if (NodeB.HasExited)
+            {
+                throw new InvalidOperationException($"Node B exited prematurely with code {NodeB.ExitCode}. Stderr: {NodeB.GetErrorOutput()}{Environment.NewLine}Stdout: {NodeB.GetAllOutput()}");
+            }
+
+            if (NodeA.GetAllOutput().Contains("[PEER] Connected to peer") &&
+                NodeB.GetAllOutput().Contains("[PEER] Connected to peer"))
+            {
+                return;
+            }
+
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException($"Nodes failed to establish mutual peer connection within {resolvedTimeout.TotalSeconds:F1}s. " +
+            $"Node A output: {NodeA.GetAllOutput()} | Node B output: {NodeB.GetAllOutput()}");
+    }
+
+    /// <summary>
     /// Spawns Node A and Node B child processes concurrently and gates execution readiness via HTTP probing
     /// against GET http://127.0.0.1:M_i/metrics with exponential backoff and timeout bounding.
     /// </summary>
@@ -562,7 +597,14 @@ public sealed class MultiProcessCliHarness : IAsyncDisposable
 
             await Task.WhenAll(taskA, taskB);
 
-            return new MultiProcessCliHarness(rootDir, clusterId, nodeA, nodeB, opts.DeleteOnDispose);
+            var harness = new MultiProcessCliHarness(rootDir, clusterId, nodeA, nodeB, opts.DeleteOnDispose);
+            if (opts.AutoPeer)
+            {
+                var peerTimeout = TimeSpan.FromSeconds(Math.Max(10.0, opts.ResolvedStartupTimeout.TotalSeconds));
+                await harness.WaitForPeerConnectionAsync(peerTimeout, cancellationToken).ConfigureAwait(false);
+            }
+
+            return harness;
         }
         catch
         {

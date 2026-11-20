@@ -43,6 +43,7 @@ public class MultiProcessCliSyncIntegrationTests
         };
 
         await using var harness = await MultiProcessCliHarness.StartAsync(options);
+        await harness.WaitForPeerConnectionAsync();
         _output.WriteLine($"Node A (PID {harness.NodeA.Id}) listening on port {harness.NodeA.ListenPort}, metrics on {harness.NodeA.MetricsPort}");
         _output.WriteLine($"Node B (PID {harness.NodeB.Id}) listening on port {harness.NodeB.ListenPort}, metrics on {harness.NodeB.MetricsPort}");
 

@@ -303,6 +303,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
             }
 
             bool anyChangesApplied = false;
+            bool remoteNeedsPull = false;
 
             // Ensure staging directory exists
             Directory.CreateDirectory(_stagingDirectory);
@@ -316,8 +317,9 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                 // Case A: Remote indicates deletion (tombstone)
                 if (summary.RemoteIsDeleted)
                 {
-                    bool applied = await HandleRemoteDeletionAsync(channel, summary, normalizedPath, ct).ConfigureAwait(false);
+                    var (applied, needsPull) = await HandleRemoteDeletionAsync(channel, summary, normalizedPath, ct).ConfigureAwait(false);
                     if (applied) anyChangesApplied = true;
+                    if (needsPull) remoteNeedsPull = true;
                     continue;
                 }
 
@@ -326,7 +328,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                 if (modified) anyChangesApplied = true;
             }
 
-            if (anyChangesApplied)
+            if (anyChangesApplied || remoteNeedsPull)
             {
                 await _wireProtocol.NotifySyncCompletedAsync(channel, ct).ConfigureAwait(false);
             }
@@ -424,7 +426,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         return deletedCount;
     }
 
-    private async Task<bool> HandleRemoteDeletionAsync(
+    private async Task<(bool Applied, bool RemoteNeedsPull)> HandleRemoteDeletionAsync(
         IPeerTransportChannel channel,
         DivergentFileSummary summary,
         string normalizedPath,
@@ -440,7 +442,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         localMeta ??= await _stateStore.GetFileAsync(normalizedPath, ct).ConfigureAwait(false);
         if (localMeta == null || localMeta.IsDeleted)
         {
-            return false;
+            return (false, false);
         }
 
         var localClock = localMeta.Clock ?? VectorClock.Empty;
@@ -462,7 +464,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         // If remote never had this file and didn't delete it, local retains it (remote will pull)
         if (!isRemoteDeleted && remoteClock == VectorClock.Empty)
         {
-            return false;
+            return (false, true);
         }
 
         var relation = localClock.Compare(remoteClock);
@@ -480,7 +482,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
                 }
 
                 await _stateStore.DeleteFileAsync(normalizedPath, ct).ConfigureAwait(false);
-                return true;
+                return (true, false);
             }
             finally
             {
@@ -491,7 +493,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         // Local modification happened after remote deletion (VB < VA): local retains file
         if (relation == CausalRelation.After)
         {
-            return false;
+            return (false, true);
         }
 
         // Concurrent edit vs delete: ADR-0001 guarantees zero silent data loss.
@@ -500,7 +502,7 @@ public sealed class SyncOrchestrator : ISyncOrchestrator
         var chunks = await _stateStore.GetFileChunksAsync(normalizedPath, ct).ConfigureAwait(false);
         var updated = localMeta with { Clock = mergedClock, Version = localMeta.Version + 1 };
         await _stateStore.UpsertFileAsync(updated, chunks, ct).ConfigureAwait(false);
-        return true;
+        return (true, true);
     }
 
     private async Task<bool> HandleRemoteFileContentAsync(
